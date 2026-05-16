@@ -1,9 +1,9 @@
-"""한국 주식 데이터 수집: pykrx + FinanceDataReader + OpenDartReader"""
+"""한국 주식 데이터 수집: pykrx (primary) + FinanceDataReader (fallback)"""
 
 import time
 from datetime import datetime, timedelta
-from pathlib import Path
 
+import FinanceDataReader as fdr
 import pandas as pd
 from loguru import logger
 from pykrx import stock
@@ -19,6 +19,9 @@ from config import DART_API_KEY, ROOT, SETTINGS
 CACHE_DIR = ROOT / SETTINGS["paths"]["data_cache"]
 CACHE_DIR.mkdir(exist_ok=True)
 
+# KRX 지수코드 → FDR 심볼 매핑
+_INDEX_FDR = {"1001": "KS11", "2001": "KQ11"}
+
 
 class KoreanStockCollector:
     def __init__(self):
@@ -33,55 +36,115 @@ class KoreanStockCollector:
     # ── 유니버스 ──────────────────────────────────────────────
 
     def get_universe(self) -> list[str]:
-        """KOSPI200 + KOSDAQ150 종목 코드 반환"""
+        """KOSPI200 + KOSDAQ150 종목 코드 반환 (pykrx 실패 시 FDR fallback)"""
         tickers = set()
         cfg = SETTINGS["data"]["universe"]
 
+        # 1차: pykrx 인덱스 구성 종목
         if cfg.get("kospi200"):
-            try:
-                tickers.update(stock.get_index_portfolio_deposit_file("1028"))
-            except Exception as e:
-                logger.warning(f"KOSPI200 로딩 실패: {e}")
-
+            tickers.update(self._get_index_tickers("1028", "KOSPI200"))
         if cfg.get("kosdaq150"):
-            try:
-                tickers.update(stock.get_index_portfolio_deposit_file("2203"))
-            except Exception as e:
-                logger.warning(f"KOSDAQ150 로딩 실패: {e}")
+            tickers.update(self._get_index_tickers("2203", "KOSDAQ150"))
+
+        # pykrx 실패 시 FDR로 전체 상장 종목 사용
+        if not tickers:
+            logger.warning("pykrx 유니버스 실패 → FinanceDataReader fallback")
+            tickers.update(self._get_universe_fdr())
 
         result = sorted(tickers)
         logger.info(f"유니버스: {len(result)}개 종목")
         return result
 
+    def _get_index_tickers(self, index_code: str, name: str) -> list[str]:
+        try:
+            result = stock.get_index_portfolio_deposit_file(index_code)
+            if result:
+                return list(result)
+            logger.warning(f"{name} pykrx 응답 비어있음")
+        except Exception as e:
+            logger.warning(f"{name} pykrx 실패: {e}")
+        return []
+
+    def _get_universe_fdr(self, max_per_market: int = 200) -> list[str]:
+        """FDR로 KOSPI + KOSDAQ 시가총액 상위 종목 반환"""
+        tickers = []
+        for market in ["KOSPI", "KOSDAQ"]:
+            try:
+                df = fdr.StockListing(market)
+                if df.empty:
+                    continue
+                sym_col = "Symbol" if "Symbol" in df.columns else df.columns[0]
+                tickers.extend(df[sym_col].dropna().astype(str).tolist()[:max_per_market])
+                logger.info(f"FDR {market}: {min(len(df), max_per_market)}개 종목 로드")
+            except Exception as e:
+                logger.warning(f"FDR {market} 실패: {e}")
+        return tickers
+
     # ── OHLCV ────────────────────────────────────────────────
 
     def get_ohlcv(self, ticker: str, start: str, end: str) -> pd.DataFrame:
-        """일별 OHLCV + 시가총액 + 외국인 보유율"""
+        """일별 OHLCV — pykrx 실패 시 FDR fallback, 캐시 사용"""
         cache_path = CACHE_DIR / f"{ticker}_{start}_{end}.parquet"
         if cache_path.exists():
             return pd.read_parquet(cache_path)
 
-        df_price = stock.get_market_ohlcv(start, end, ticker)
-        df_price.index = pd.to_datetime(df_price.index)
-        df_price.columns = ["open", "high", "low", "close", "volume", "amount", "changes"]
+        df = self._get_ohlcv_pykrx(ticker, start, end)
+        if df.empty:
+            df = self._get_ohlcv_fdr(ticker, start, end)
 
-        try:
-            df_cap = stock.get_market_cap(start, end, ticker)
-            df_cap.index = pd.to_datetime(df_cap.index)
-            df_cap = df_cap[["시가총액", "거래대금"]].rename(
-                columns={"시가총액": "mktcap", "거래대금": "turnover"}
-            )
-            df = df_price.join(df_cap, how="left")
-        except Exception:
-            df = df_price
-
-        df["ticker"] = ticker
-        df.to_parquet(cache_path)
+        if not df.empty:
+            df["ticker"] = ticker
+            df.to_parquet(cache_path)
         return df
+
+    def _get_ohlcv_pykrx(self, ticker: str, start: str, end: str) -> pd.DataFrame:
+        try:
+            df = stock.get_market_ohlcv(start, end, ticker)
+            if df.empty:
+                return pd.DataFrame()
+            df.index = pd.to_datetime(df.index)
+            df.columns = ["open", "high", "low", "close", "volume", "amount", "changes"]
+            try:
+                df_cap = stock.get_market_cap(start, end, ticker)
+                df_cap.index = pd.to_datetime(df_cap.index)
+                if "시가총액" in df_cap.columns:
+                    df_cap = df_cap[["시가총액", "거래대금"]].rename(
+                        columns={"시가총액": "mktcap", "거래대금": "turnover"}
+                    )
+                    df = df.join(df_cap, how="left")
+            except Exception:
+                pass
+            return df
+        except Exception as e:
+            logger.debug(f"pykrx OHLCV 실패 ({ticker}): {e}")
+            return pd.DataFrame()
+
+    def _get_ohlcv_fdr(self, ticker: str, start: str, end: str) -> pd.DataFrame:
+        try:
+            start_d = f"{start[:4]}-{start[4:6]}-{start[6:]}"
+            end_d = f"{end[:4]}-{end[4:6]}-{end[6:]}"
+            df = fdr.DataReader(ticker, start_d, end_d)
+            if df.empty:
+                return pd.DataFrame()
+            df.index = pd.to_datetime(df.index)
+            # FDR 컬럼 정규화
+            col_map = {
+                "Open": "open", "High": "high", "Low": "low",
+                "Close": "close", "Volume": "volume",
+                "Change": "changes",
+            }
+            df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
+            if "amount" not in df.columns:
+                df["amount"] = df.get("close", 0) * df.get("volume", 0)
+            if "changes" not in df.columns:
+                df["changes"] = df["close"].pct_change()
+            return df
+        except Exception as e:
+            logger.debug(f"FDR OHLCV 실패 ({ticker}): {e}")
+            return pd.DataFrame()
 
     def get_ohlcv_bulk(self, tickers: list[str], start: str, end: str,
                        delay: float = 0.3) -> dict[str, pd.DataFrame]:
-        """여러 종목 일괄 수집 (서버 부하 방지 delay 포함)"""
         result = {}
         for i, ticker in enumerate(tickers):
             try:
@@ -96,39 +159,44 @@ class KoreanStockCollector:
     # ── 섹터 ─────────────────────────────────────────────────
 
     def get_sector_map(self) -> pd.DataFrame:
-        """KRX 종목별 섹터(업종) 매핑"""
+        """KRX 종목별 섹터 매핑 — FDR StockListing 우선 사용"""
         cache_path = CACHE_DIR / "sector_map.parquet"
         if cache_path.exists():
             age = datetime.now() - datetime.fromtimestamp(cache_path.stat().st_mtime)
             if age.days < 7:
                 return pd.read_parquet(cache_path)
 
-        today = datetime.today().strftime("%Y%m%d")
         rows = []
         for market in ["KOSPI", "KOSDAQ"]:
             try:
-                df = stock.get_market_ticker_name(market=market)
-                for ticker, name in df.items():
-                    try:
-                        sector_df = stock.get_market_sector_classifications(today, market)
-                        rows.append({"ticker": ticker, "name": name, "market": market})
-                    except Exception:
-                        rows.append({"ticker": ticker, "name": name, "market": market})
-                time.sleep(0.5)
+                df = fdr.StockListing(market)
+                if df.empty:
+                    continue
+                for _, row in df.iterrows():
+                    sym = str(row.get("Symbol", row.get("Code", "")))
+                    name = str(row.get("Name", ""))
+                    sector = str(row.get("Sector", "기타"))
+                    if sym:
+                        rows.append({"ticker": sym, "name": name,
+                                     "sector": sector, "market": market})
             except Exception as e:
-                logger.warning(f"{market} 섹터 로딩 실패: {e}")
+                logger.warning(f"FDR {market} 섹터 로딩 실패: {e}")
+
+        if not rows:
+            logger.warning("섹터 맵 로딩 실패, 빈 DataFrame 반환")
+            return pd.DataFrame(columns=["name", "sector", "market"])
 
         df = pd.DataFrame(rows).drop_duplicates("ticker").set_index("ticker")
         df.to_parquet(cache_path)
+        logger.info(f"섹터 맵 구축: {len(df)}개 종목")
         return df
 
-    def get_sector_name(self, ticker: str, date: str) -> str:
-        """특정 날짜 기준 종목 섹터명"""
+    def get_sector_name(self, ticker: str, date: str = None) -> str:
+        """종목 섹터명 반환"""
         try:
-            for market in ["KOSPI", "KOSDAQ"]:
-                df = stock.get_market_sector_classifications(date, market)
-                if ticker in df.index:
-                    return df.loc[ticker, "섹터"] if "섹터" in df.columns else "기타"
+            sector_map = self.get_sector_map()
+            if ticker in sector_map.index:
+                return str(sector_map.loc[ticker, "sector"])
         except Exception:
             pass
         return "기타"
@@ -136,7 +204,6 @@ class KoreanStockCollector:
     # ── DART 공시 ────────────────────────────────────────────
 
     def get_recent_filings(self, corp_code: str, days: int = 30) -> list[dict]:
-        """최근 N일 DART 공시 목록"""
         if self.dart is None:
             return []
         start = (datetime.today() - timedelta(days=days)).strftime("%Y-%m-%d")
@@ -150,7 +217,6 @@ class KoreanStockCollector:
             return []
 
     def get_financial_summary(self, corp_code: str) -> dict:
-        """최근 연간 재무요약 (매출, 영업이익, 순이익)"""
         if self.dart is None:
             return {}
         try:
@@ -175,8 +241,22 @@ class KoreanStockCollector:
     # ── 인덱스 ───────────────────────────────────────────────
 
     def get_index_ohlcv(self, index_code: str, start: str, end: str) -> pd.DataFrame:
-        """지수 OHLCV (KOSPI: 1001, KOSDAQ: 2001)"""
-        df = stock.get_index_ohlcv(start, end, index_code)
-        df.index = pd.to_datetime(df.index)
-        df.columns = [c.lower().replace(" ", "_") for c in df.columns]
+        """지수 OHLCV — pykrx 실패 시 FDR fallback"""
+        df = self._get_index_pykrx(index_code, start, end)
+        if df.empty:
+            fdr_symbol = _INDEX_FDR.get(index_code, "KS11")
+            df = self._get_ohlcv_fdr(fdr_symbol, start, end)
+            logger.info(f"지수 {index_code} → FDR({fdr_symbol}) fallback")
         return df
+
+    def _get_index_pykrx(self, index_code: str, start: str, end: str) -> pd.DataFrame:
+        try:
+            df = stock.get_index_ohlcv(start, end, index_code)
+            if df.empty:
+                return pd.DataFrame()
+            df.index = pd.to_datetime(df.index)
+            df.columns = [c.lower().replace(" ", "_") for c in df.columns]
+            return df
+        except Exception as e:
+            logger.debug(f"pykrx 지수 실패 ({index_code}): {e}")
+            return pd.DataFrame()

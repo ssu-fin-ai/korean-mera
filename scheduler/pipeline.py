@@ -3,6 +3,7 @@
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import pandas as pd
 from loguru import logger
 
 from config import ROOT, SETTINGS
@@ -56,7 +57,7 @@ class MERAPipeline:
 
                 # 매월 말 날짜만 샘플링 (DB 크기 절약)
                 sample_dates = df.resample("ME").last().index
-                sample_dates = [d.strftime("%Y-%m-%d") for d in sample_dates if not d.isna()]
+                sample_dates = [d.strftime("%Y-%m-%d") for d in sample_dates if not pd.isna(d)]
 
                 ids, texts, embeddings, metas = [], [], [], []
 
