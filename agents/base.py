@@ -1,22 +1,23 @@
-"""LLM 에이전트 공통 기반 클래스"""
+"""LLM 에이전트 공통 기반 클래스 (Gemini Flash)"""
 
 import json
 import re
 import time
 from typing import Any
 
-import anthropic
+from google import genai
+from google.genai import types
 from loguru import logger
 
-from config import ANTHROPIC_API_KEY, SETTINGS
+from config import GOOGLE_API_KEY, SETTINGS
 
 _client = None
 
 
-def _get_client() -> anthropic.Anthropic:
+def _get_client() -> genai.Client:
     global _client
     if _client is None:
-        _client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        _client = genai.Client(api_key=GOOGLE_API_KEY)
     return _client
 
 
@@ -26,36 +27,36 @@ MAX_TOKENS = SETTINGS["llm"]["max_tokens"]
 
 
 def call_llm(system: str, user: str, retries: int = 3) -> str:
-    """Claude API 호출 with 재시도"""
+    """Gemini Flash API 호출 with 재시도"""
     client = _get_client()
+    prompt = f"{system}\n\n{user}"
+
     for attempt in range(retries):
         try:
-            resp = client.messages.create(
+            resp = client.models.generate_content(
                 model=MODEL,
-                max_tokens=MAX_TOKENS,
-                temperature=TEMPERATURE,
-                system=system,
-                messages=[{"role": "user", "content": user}],
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=TEMPERATURE,
+                    max_output_tokens=MAX_TOKENS,
+                ),
             )
-            return resp.content[0].text
-        except anthropic.RateLimitError:
-            wait = 10 * (attempt + 1)
-            logger.warning(f"Rate limit. {wait}초 대기...")
-            time.sleep(wait)
+            return resp.text
         except Exception as e:
-            logger.error(f"LLM 호출 실패 (시도 {attempt+1}): {e}")
-            time.sleep(2)
+            wait = 5 * (attempt + 1)
+            logger.warning(f"Gemini 호출 실패 (시도 {attempt+1}/3): {e}. {wait}초 대기")
+            time.sleep(wait)
+
+    logger.error("Gemini 최종 실패, 빈 문자열 반환")
     return ""
 
 
 def parse_json_response(text: str) -> dict[str, Any]:
     """LLM 응답에서 JSON 블록 추출"""
-    # ```json ... ``` 블록 우선 시도
     match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if match:
         text = match.group(1)
     else:
-        # 중괄호 블록 추출
         match = re.search(r"\{.*\}", text, re.DOTALL)
         if match:
             text = match.group(0)
@@ -75,7 +76,7 @@ def format_retrieved_patterns(patterns: list[dict]) -> str:
     for i, p in enumerate(patterns, 1):
         meta = p.get("metadata", {})
         label = meta.get("label_5d", "N/A")
-        label_str = f"{float(label)*100:+.1f}%" if label != "N/A" and label != "" else "N/A"
+        label_str = f"{float(label)*100:+.1f}%" if label not in ("N/A", "") else "N/A"
         sim = 1 - p.get("distance", 1)
         lines.append(
             f"[사례{i}] 유사도:{sim:.2f} | 이후5일:{label_str}\n{p['text']}"
