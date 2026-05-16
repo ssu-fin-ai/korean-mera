@@ -1,0 +1,30 @@
+# 환경변수 (API 키 절대 커밋 금지)
+.env
+
+# 캐시 / DB
+cache/
+chroma_db/
+logs/
+reports/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# 가상환경
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# OMC
+.omc/

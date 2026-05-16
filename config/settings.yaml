@@ -1,0 +1,39 @@
+llm:
+  provider: "anthropic"           # anthropic | openai
+  model: "claude-sonnet-4-6"
+  embedding_model: "text-embedding-3-small"  # openai embedding
+  temperature: 0.1
+  max_tokens: 2048
+
+data:
+  universe:
+    kospi200: true
+    kosdaq150: true
+  history_years: 5
+  feature_window: 20              # 패턴 생성 시 참조 일수
+  update_time: "16:30"            # 장 마감 후 수집 시각
+
+retrieval:
+  top_k: 5                        # 유사 패턴 검색 수
+  min_similarity: 0.70
+
+agents:
+  gate:
+    max_candidates: 2             # 라우팅할 전문가 최대 수
+  experts:
+    - growth                      # 성장주
+    - value                       # 가치주
+    - theme                       # 테마주
+    - dividend                    # 배당주
+    - crisis                      # 위기/급락
+
+portfolio:
+  top_n: 20                       # 최종 포트폴리오 종목 수
+  rebalance_freq: "weekly"        # daily | weekly
+  signal_threshold: 0.60          # BUY 신뢰도 최소값
+
+paths:
+  data_cache: "./cache"
+  chroma_db: "./chroma_db"
+  logs: "./logs"
+  reports: "./reports"
