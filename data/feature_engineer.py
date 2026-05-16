@@ -18,7 +18,8 @@ class FeatureEngineer:
         df = self._add_momentum(df)
         df = self._add_volatility(df)
         df = self._add_volume(df)
-        return df.dropna()
+        feature_cols = [c for c in df.columns if not c.startswith("label_")]
+        return df.dropna(subset=feature_cols)
 
     # ── 수익률 ────────────────────────────────────────────────
 
@@ -116,12 +117,15 @@ class FeatureEngineer:
     # ── 스냅샷 (패턴 벡터) ───────────────────────────────────
 
     def get_snapshot_vector(self, df: pd.DataFrame, date: str) -> dict | None:
-        """특정 날짜 기준 패턴 수치 벡터 반환"""
-        if date not in df.index.strftime("%Y-%m-%d").tolist():
+        """특정 날짜 기준 패턴 수치 벡터 반환 (당일 없으면 가장 가까운 이전 거래일 사용)"""
+        available = df.index.strftime("%Y-%m-%d")
+        valid = available[available <= date]
+        if valid.empty:
             return None
+        actual_date = valid[-1]
 
-        row = df[df.index.strftime("%Y-%m-%d") == date].iloc[-1]
-        window_data = df[df.index.strftime("%Y-%m-%d") <= date].tail(self.window)
+        row = df[df.index.strftime("%Y-%m-%d") == actual_date].iloc[-1]
+        window_data = df[df.index.strftime("%Y-%m-%d") <= actual_date].tail(self.window)
 
         return {
             # 수익률 시계열 (정규화)

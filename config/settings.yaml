@@ -1,9 +1,9 @@
 llm:
   provider: "google"              # google | anthropic
-  model: "gemini-2.0-flash"
+  model: "gemini-2.5-flash"
   embedding_model: "snunlp/KR-SBERT-V40K-klueNLI-augSTS"  # 로컬 KR-SBERT
   temperature: 0.1
-  max_tokens: 2048
+  max_tokens: 8192
 
 data:
   universe:
@@ -31,6 +31,10 @@ portfolio:
   top_n: 20                       # 최종 포트폴리오 종목 수
   rebalance_freq: "weekly"        # daily | weekly
   signal_threshold: 0.60          # BUY 신뢰도 최소값
+
+pipeline:
+  workers: 10                       # 병렬 종목 분석 스레드 수
+  api_concurrency: 5                # Gemini API 동시 호출 수 (RPM 제한 고려)
 
 paths:
   data_cache: "./cache"

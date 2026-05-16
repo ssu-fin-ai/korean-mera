@@ -103,7 +103,18 @@ class KoreanStockCollector:
             if df.empty:
                 return pd.DataFrame()
             df.index = pd.to_datetime(df.index)
-            df.columns = ["open", "high", "low", "close", "volume", "amount", "changes"]
+            ncols = len(df.columns)
+            if ncols >= 7:
+                df.columns = ["open", "high", "low", "close", "volume", "amount", "changes"] + list(df.columns[7:])
+            elif ncols == 6:
+                df.columns = ["open", "high", "low", "close", "volume", "changes"]
+                df["amount"] = df["close"] * df["volume"]
+            elif ncols >= 5:
+                df.columns = ["open", "high", "low", "close", "volume"] + list(df.columns[5:])
+                df["amount"] = df["close"] * df["volume"]
+                df["changes"] = df["close"].pct_change()
+            else:
+                return pd.DataFrame()
             try:
                 df_cap = stock.get_market_cap(start, end, ticker)
                 df_cap.index = pd.to_datetime(df_cap.index)
@@ -255,7 +266,10 @@ class KoreanStockCollector:
             if df.empty:
                 return pd.DataFrame()
             df.index = pd.to_datetime(df.index)
-            df.columns = [c.lower().replace(" ", "_") for c in df.columns]
+            # pykrx returns Korean column names — normalize to English
+            col_map = {"시가": "open", "고가": "high", "저가": "low", "종가": "close",
+                       "거래량": "volume", "거래대금": "amount"}
+            df.columns = [col_map.get(c, c.lower().replace(" ", "_")) for c in df.columns]
             return df
         except Exception as e:
             logger.debug(f"pykrx 지수 실패 ({index_code}): {e}")

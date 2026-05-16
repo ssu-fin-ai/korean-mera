@@ -1,5 +1,7 @@
 """메인 파이프라인: 데이터 수집 → 임베딩 → 신호 생성 → 리포트"""
 
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -111,22 +113,34 @@ class MERAPipeline:
         sector_map = self.collector.get_sector_map()
 
         cfg = SETTINGS["portfolio"]
+        pipe_cfg = SETTINGS.get("pipeline", {})
+        workers = pipe_cfg.get("workers", 10)
+        api_sem = threading.Semaphore(pipe_cfg.get("api_concurrency", 5))
         all_signals: list[StockSignal] = []
+        counter = {"done": 0}
+        lock = threading.Lock()
 
-        logger.info(f"일별 분석 시작: {today_dash} | {len(tickers)}종목")
+        logger.info(f"일별 분석 시작: {today_dash} | {len(tickers)}종목 | workers={workers}")
 
-        for i, ticker in enumerate(tickers):
-            try:
-                signal = self._analyze_one(
-                    ticker, today, today_dash, start, kospi_df, sector_map
-                )
-                if signal:
-                    all_signals.append(signal)
-            except Exception as e:
-                logger.warning(f"{ticker} 분석 실패: {e}")
+        def analyze_with_sem(ticker):
+            with api_sem:
+                return self._analyze_one(ticker, today, today_dash, start, kospi_df, sector_map)
 
-            if (i + 1) % 50 == 0:
-                logger.info(f"  {i+1}/{len(tickers)} 분석 완료")
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(analyze_with_sem, t): t for t in tickers}
+            for future in as_completed(futures):
+                ticker = futures[future]
+                try:
+                    signal = future.result()
+                    if signal:
+                        with lock:
+                            all_signals.append(signal)
+                except Exception as e:
+                    logger.warning(f"{ticker} 분석 실패: {e}")
+                with lock:
+                    counter["done"] += 1
+                    if counter["done"] % 50 == 0:
+                        logger.info(f"  {counter['done']}/{len(tickers)} 분석 완료")
 
         portfolio = build_portfolio(
             all_signals,
