@@ -13,7 +13,7 @@ from data.collector import KoreanStockCollector
 from data.feature_engineer import FeatureEngineer
 from data.text_generator import generate_news_text, generate_pattern_text
 from vector_store.embedder import embed_single, embed_texts
-from vector_store.store import NewsStore, PatternStore
+from vector_store.store import NewsStore, PatternStore, PortfolioStore
 from agents.gate_agent import route
 from agents.experts import run_experts
 from portfolio.aggregator import StockSignal, aggregate, build_portfolio, build_report
@@ -28,6 +28,7 @@ class MERAPipeline:
         self.engineer = FeatureEngineer(window=SETTINGS["data"]["feature_window"])
         self.pattern_store = PatternStore()
         self.news_store = NewsStore()
+        self.portfolio_store = PortfolioStore()
 
     # ── Phase 1: 히스토리 DB 구축 (최초 1회) ────────────────────────────────
 
@@ -120,6 +121,9 @@ class MERAPipeline:
         counter = {"done": 0}
         lock = threading.Lock()
 
+        # 이전 포트폴리오 수익률 평가 (DB에 저장된 경우만)
+        self._evaluate_prev_portfolio(today_dash)
+
         logger.info(f"일별 분석 시작: {today_dash} | {len(tickers)}종목 | workers={workers}")
 
         def analyze_with_sem(ticker):
@@ -148,6 +152,10 @@ class MERAPipeline:
             min_confidence=cfg["signal_threshold"],
         )
         report = build_report(portfolio, today_dash)
+
+        # 포트폴리오 DB 저장 (다음날 평가에 사용)
+        if not portfolio.empty:
+            self.portfolio_store.save(today_dash, portfolio)
 
         # 리포트 저장
         report_path = REPORTS_DIR / f"report_{today}.txt"
@@ -205,6 +213,35 @@ class MERAPipeline:
             gate_result=gate_result, expert_results=expert_results,
         )
         return aggregate(stock_signal)
+
+    # ── Phase 2.5: 이전 포트폴리오 평가 ─────────────────────────────────────
+
+    def _get_prev_portfolio_date(self, today_dash: str) -> str | None:
+        """ChromaDB에서 today_dash 이전 가장 최근 포트폴리오 날짜 반환"""
+        try:
+            dates = self.portfolio_store.list_dates()
+            prev = [d for d in dates if d < today_dash]
+            return prev[-1] if prev else None
+        except Exception as e:
+            logger.debug(f"이전 포트폴리오 날짜 조회 실패: {e}")
+            return None
+
+    def _evaluate_prev_portfolio(self, today_dash: str) -> None:
+        """직전 포트폴리오 수익률 평가 후 EvaluationStore에 저장"""
+        prev_date = self._get_prev_portfolio_date(today_dash)
+        if not prev_date:
+            return
+        try:
+            from portfolio.evaluator import run_evaluation
+            result = run_evaluation(prev_date, today_dash, self.collector)
+            if result:
+                logger.info(
+                    f"전일({prev_date}) 포트폴리오 평가: "
+                    f"평균수익 {result['avg_return']:+.1%} | "
+                    f"적중률 {result['hit_rate']:.0%}"
+                )
+        except Exception as e:
+            logger.warning(f"포트폴리오 평가 실패 ({prev_date}): {e}")
 
     # ── Phase 3: 데이터 업데이트 (오늘치 추가) ───────────────────────────────
 
