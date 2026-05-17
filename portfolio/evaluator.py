@@ -135,7 +135,9 @@ def run_evaluation(portfolio_date: str, eval_date: str, collector) -> dict:
     api_sem = threading.Semaphore(pipe_cfg.get("api_concurrency", 5))
 
     def _eval_one(entry):
-        meta = entry["metadata"]
+        # Supabase: 평탄 dict / ChromaDB: {"text":..., "metadata":{...}}
+        meta = entry.get("metadata", entry)
+        signal_text = entry.get("text") or entry.get("signal_text", "")
         actual_ret = compute_actual_return(
             collector, meta["ticker"], portfolio_date, eval_date
         )
@@ -145,7 +147,7 @@ def run_evaluation(portfolio_date: str, eval_date: str, collector) -> dict:
             return evaluate_stock(
                 ticker=meta["ticker"],
                 name=meta["name"],
-                signal_text=entry["text"],
+                signal_text=signal_text,
                 actual_ret=actual_ret,
                 target_ret=float(meta.get("target_return", 0)),
             )
