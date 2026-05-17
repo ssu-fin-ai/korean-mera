@@ -12,3 +12,5 @@ with open(ROOT / "config" / "settings.yaml", "r", encoding="utf-8") as f:
 
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
 DART_API_KEY = os.getenv("DART_API_KEY", "")
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")

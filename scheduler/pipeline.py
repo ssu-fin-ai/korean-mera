@@ -13,7 +13,8 @@ from data.collector import KoreanStockCollector
 from data.feature_engineer import FeatureEngineer
 from data.text_generator import generate_news_text, generate_pattern_text
 from vector_store.embedder import embed_single, embed_texts
-from vector_store.store import NewsStore, PatternStore, PortfolioStore
+from vector_store.store import NewsStore, PatternStore
+from db.supabase_store import PortfolioStore
 from agents.gate_agent import route
 from agents.experts import run_experts
 from portfolio.aggregator import StockSignal, aggregate, build_portfolio, build_report

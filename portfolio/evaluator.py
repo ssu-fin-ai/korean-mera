@@ -113,7 +113,7 @@ def run_evaluation(portfolio_date: str, eval_date: str, collector) -> dict:
 
     이미 평가된 경우 스킵. portfolio_date / eval_date 모두 YYYY-MM-DD.
     """
-    from vector_store.store import EvaluationStore, PortfolioStore
+    from db.supabase_store import EvaluationStore, PortfolioStore
 
     eval_store = EvaluationStore()
     port_store = PortfolioStore()
