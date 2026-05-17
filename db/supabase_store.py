@@ -54,6 +54,18 @@ def _post(url: str, payload) -> tuple[int, bytes]:
         return e.code, e.read()
 
 
+def _upsert(table: str, payload, on_conflict: str) -> tuple[int, bytes]:
+    """UNIQUE 충돌 시 UPDATE로 처리하는 upsert"""
+    url = f"{_rest(table)}?on_conflict={on_conflict}"
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(url, data=data, headers=_headers(), method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
+
+
 def _get(url: str) -> tuple[int, list]:
     req = urllib.request.Request(url, headers=_headers(prefer=""), method="GET")
     try:
@@ -98,7 +110,7 @@ class PortfolioStore:
         if not rows:
             return 0
 
-        status, body = _post(_rest(self.TABLE), rows)
+        status, body = _upsert(self.TABLE, rows, "portfolio_date,ticker")
         if status not in (200, 201):
             logger.error(f"PortfolioStore 저장 실패: {status} {body[:200]}")
             return 0
@@ -142,8 +154,8 @@ class EvaluationStore:
         hit_rate: float,
     ) -> None:
         # 요약 저장
-        status, body = _post(
-            _rest(self.SUMMARY_TABLE),
+        status, body = _upsert(
+            self.SUMMARY_TABLE,
             {
                 "portfolio_date": portfolio_date,
                 "eval_date": eval_date,
@@ -152,6 +164,7 @@ class EvaluationStore:
                 "hit_rate": float(hit_rate),
                 "summary_text": summary,
             },
+            "portfolio_date",
         )
         if status not in (200, 201):
             logger.error(f"EvaluationStore 요약 저장 실패: {status} {body[:200]}")
@@ -173,7 +186,7 @@ class EvaluationStore:
                 }
                 for e in stock_evals
             ]
-            status, body = _post(_rest(self.STOCK_TABLE), rows)
+            status, body = _upsert(self.STOCK_TABLE, rows, "portfolio_date,ticker")
             if status not in (200, 201):
                 logger.error(f"EvaluationStore 종목 저장 실패: {status} {body[:200]}")
 
