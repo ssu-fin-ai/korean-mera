@@ -118,9 +118,13 @@ def run_evaluation(portfolio_date: str, eval_date: str, collector) -> dict:
     eval_store = EvaluationStore()
     port_store = PortfolioStore()
 
-    if eval_store.get_summary_by_date(portfolio_date):
-        logger.info(f"이미 평가됨: {portfolio_date} → 스킵")
-        return {}
+    existing = eval_store.get_summary_by_date(portfolio_date)
+    if existing:
+        existing_eval_date = existing.get("metadata", existing).get("eval_date", "")
+        if existing_eval_date == eval_date:
+            logger.info(f"이미 평가됨 ({portfolio_date} → {eval_date}) → 스킵")
+            return {}
+        logger.info(f"기존 평가 덮어씀: {portfolio_date} (이전 eval_date={existing_eval_date} → {eval_date})")
 
     entries = port_store.get_by_date(portfolio_date)
     if not entries:

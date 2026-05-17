@@ -217,19 +217,37 @@ class MERAPipeline:
 
     # ── Phase 2.5: 이전 포트폴리오 평가 ─────────────────────────────────────
 
-    def _get_prev_portfolio_date(self, today_dash: str) -> str | None:
-        """ChromaDB에서 today_dash 이전 가장 최근 포트폴리오 날짜 반환"""
+    def _get_weekly_portfolio_date(self, today_dash: str) -> str | None:
+        """5영업일(1주) 전 포트폴리오 날짜 반환 (주간 리밸런싱 기준).
+
+        today_dash 기준 BDay(5) 이전에 가장 가까운 포트폴리오를 반환.
+        너무 오래된 것(10영업일 초과)은 제외.
+        """
         try:
+            today_dt = pd.to_datetime(today_dash)
+            target_dt = today_dt - pd.tseries.offsets.BDay(5)
+
             dates = self.portfolio_store.list_dates()
-            prev = [d for d in dates if d < today_dash]
-            return prev[-1] if prev else None
+            candidates = [d for d in dates if d < today_dash]
+            if not candidates:
+                return None
+
+            # target_dt와 가장 가까운 날짜 선택
+            def _dist(d):
+                return abs((pd.to_datetime(d) - target_dt).days)
+
+            closest = min(candidates, key=_dist)
+            # 10 calendar days 이상 차이나면 제외
+            if _dist(closest) > 10:
+                return None
+            return closest
         except Exception as e:
-            logger.debug(f"이전 포트폴리오 날짜 조회 실패: {e}")
+            logger.debug(f"주간 포트폴리오 날짜 조회 실패: {e}")
             return None
 
     def _evaluate_prev_portfolio(self, today_dash: str) -> None:
-        """직전 포트폴리오 수익률 평가 후 EvaluationStore에 저장"""
-        prev_date = self._get_prev_portfolio_date(today_dash)
+        """지난 주 포트폴리오 수익률 평가 후 EvaluationStore에 저장 (5영업일 기준)"""
+        prev_date = self._get_weekly_portfolio_date(today_dash)
         if not prev_date:
             return
         try:
@@ -237,7 +255,7 @@ class MERAPipeline:
             result = run_evaluation(prev_date, today_dash, self.collector)
             if result:
                 logger.info(
-                    f"전일({prev_date}) 포트폴리오 평가: "
+                    f"주간 포트폴리오 평가 완료 ({prev_date} → {today_dash}): "
                     f"평균수익 {result['avg_return']:+.1%} | "
                     f"적중률 {result['hit_rate']:.0%}"
                 )

@@ -116,11 +116,12 @@ with right:
 
     if summary:
         m = summary.get("metadata", summary)
-        c1, c2, c3 = st.columns(3)
+        c1, c2, c3, c4 = st.columns(4)
         avg_ret = m["avg_return"]
         c1.metric("평균수익률", f"{avg_ret:+.1%}", delta_color="normal" if avg_ret >= 0 else "inverse")
         c2.metric("적중률", f"{m['hit_rate']:.0%}")
         c3.metric("평가 종목", f"{m['stock_count']}개")
+        c4.metric("평가 기준일", str(m.get("eval_date", "-")))
 
         summary_text = summary.get("summary_text", summary.get("text", ""))
         if summary_text:
@@ -132,11 +133,8 @@ with right:
             df_e = pd.DataFrame(stock_evals)
             df_e = df_e.sort_values("actual_return", ascending=False)
 
-            def _style_row(row):
-                color = "#d4edda" if row["correct"] else "#f8d7da"
-                return [f"background-color: {color}"] * len(row)
-
             show_e = {
+                "portfolio_date": "포트폴리오", "eval_date": "평가일",
                 "ticker": "티커", "name": "종목명",
                 "actual_return": "실제수익", "target_return": "목표수익",
                 "correct": "적중",
@@ -144,7 +142,13 @@ with right:
             df_show_e = df_e[[c for c in show_e if c in df_e.columns]].rename(columns=show_e)
             df_show_e["실제수익"] = df_show_e["실제수익"].apply(lambda x: f"{x:+.1%}")
             df_show_e["목표수익"] = df_show_e["목표수익"].apply(lambda x: f"{x:+.1%}")
-            df_show_e["적중"] = df_show_e["적중"].apply(lambda x: "✓" if x else "✗")
+            df_show_e["적중"] = df_show_e["적중"].apply(lambda x: "✅ 적중" if x else "❌ 오신호")
+
+            def _style_row(row):
+                hit = row.get("적중", "") == "✅ 적중"
+                bg = "#0d6832" if hit else "#7b1d1d"
+                fg = "#ffffff"
+                return [f"background-color: {bg}; color: {fg}; font-weight: bold"] * len(row)
 
             st.dataframe(
                 df_show_e.style.apply(_style_row, axis=1),

@@ -48,7 +48,7 @@ def cmd_evaluate(args):
     date = args.date or __import__("datetime").datetime.today().strftime("%Y%m%d")
     today_dash = f"{date[:4]}-{date[4:6]}-{date[6:]}"
 
-    prev_date = pipeline._get_prev_portfolio_date(today_dash)
+    prev_date = pipeline._get_weekly_portfolio_date(today_dash)
     if not prev_date:
         logger.error("평가할 포트폴리오가 DB에 없습니다. 먼저 --mode run 실행 필요")
         return
