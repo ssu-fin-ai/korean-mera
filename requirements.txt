@@ -1,7 +1,7 @@
 # Data Collection
 pykrx>=1.0.45
 finance-datareader>=0.9.0
-OpenDartReader>=0.3.0
+OpenDartReader>=0.2.0
 
 # Feature Engineering
 pandas>=2.0.0
