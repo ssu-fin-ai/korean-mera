@@ -3,9 +3,7 @@
 
 # 캐시 / DB
 cache/
-chroma_db/
 logs/
-reports/
 __pycache__/
 *.pyc
 *.pyo
