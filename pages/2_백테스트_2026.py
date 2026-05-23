@@ -203,24 +203,30 @@ if section == "📊 분석 주기별 리포트":
 
         # 기간별 수익률 차트
         st.subheader("기간별 평균수익률")
-        pivot = (
-            df_sum[df_sum["expert_key"].isin(EXPERTS)]
-            .pivot(index="날짜", columns="전문가", values="평균수익")
-            .reindex([_date_label(p, freq_key) for p, _ in sched])
-        )
-        st.bar_chart(pivot, height=300)
+        if not df_sum.empty and "expert_key" in df_sum.columns:
+            pivot = (
+                df_sum[df_sum["expert_key"].isin(EXPERTS)]
+                .pivot(index="날짜", columns="전문가", values="평균수익")
+                .reindex([_date_label(p, freq_key) for p, _ in sched])
+            )
+            st.bar_chart(pivot, height=300)
+        else:
+            st.info("평가 데이터가 없습니다. 백테스트를 먼저 실행하세요.")
 
         st.divider()
 
         # 기간별 상세 테이블
         st.subheader("기간별 상세 성과")
-        disp = df_sum.copy()
-        disp["평균수익"] = disp["평균수익"].apply(lambda x: _fmt(x))
-        disp["적중률"] = disp["적중률"].apply(lambda x: f"{x:.0%}")
-        st.dataframe(
-            disp[["날짜","전문가","종목수","평균수익","적중률"]].style.map(_cr, subset=["평균수익"]),
-            use_container_width=True, hide_index=True,
-        )
+        if not df_sum.empty:
+            disp = df_sum.copy()
+            disp["평균수익"] = disp["평균수익"].apply(lambda x: _fmt(x))
+            disp["적중률"] = disp["적중률"].apply(lambda x: f"{x:.0%}")
+            st.dataframe(
+                disp[["날짜","전문가","종목수","평균수익","적중률"]].style.map(_cr, subset=["평균수익"]),
+                use_container_width=True, hide_index=True,
+            )
+        else:
+            st.info("평가 데이터가 없습니다.")
 
     # ── 포트폴리오 조회 ────────────────────────────────────────
     with tab_port:
