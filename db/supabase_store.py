@@ -152,6 +152,10 @@ class EvaluationStore:
         summary: str,
         avg_return: float,
         hit_rate: float,
+        arr: float = 0.0,
+        mdd: float = 0.0,
+        sortino: float = 0.0,
+        calmar: float = 0.0,
     ) -> None:
         # 요약 저장
         status, body = _upsert(
@@ -162,6 +166,10 @@ class EvaluationStore:
                 "stock_count": len(stock_evals),
                 "avg_return": float(avg_return),
                 "hit_rate": float(hit_rate),
+                "arr": float(arr),
+                "mdd": float(mdd),
+                "sortino": float(sortino),
+                "calmar": float(calmar),
                 "summary_text": summary,
             },
             "portfolio_date",
@@ -237,6 +245,7 @@ def init_tables() -> None:
             portfolio_date DATE NOT NULL UNIQUE,
             eval_date DATE NOT NULL,
             stock_count INTEGER, avg_return FLOAT8, hit_rate FLOAT8,
+            arr FLOAT8, mdd FLOAT8, sortino FLOAT8, calmar FLOAT8,
             summary_text TEXT, created_at TIMESTAMPTZ DEFAULT NOW()
         )""",
         """CREATE TABLE IF NOT EXISTS portfolio_eval_stocks (

@@ -1,23 +1,22 @@
-"""LLM 에이전트 공통 기반 클래스 (Gemini Flash)"""
+"""LLM 에이전트 공통 기반 클래스 (Claude)"""
 
 import json
 import re
 import time
 from typing import Any
 
-from google import genai
-from google.genai import types
+import anthropic
 from loguru import logger
 
-from config import GOOGLE_API_KEY, SETTINGS
+from config import ANTHROPIC_API_KEY, SETTINGS
 
 _client = None
 
 
-def _get_client() -> genai.Client:
+def _get_client() -> anthropic.Anthropic:
     global _client
     if _client is None:
-        _client = genai.Client(api_key=GOOGLE_API_KEY)
+        _client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     return _client
 
 
@@ -26,43 +25,26 @@ TEMPERATURE = SETTINGS["llm"]["temperature"]
 MAX_TOKENS = SETTINGS["llm"]["max_tokens"]
 
 
-def _extract_text(resp) -> str:
-    """Gemini 응답에서 텍스트 추출 (모델 버전별 구조 차이 대응)"""
-    # 2.5+ 모델: thinking 포함 구조
-    if resp.text is not None:
-        return resp.text
-    try:
-        for part in resp.candidates[0].content.parts:
-            if hasattr(part, "text") and part.text:
-                return part.text
-    except Exception:
-        pass
-    return ""
-
-
 def call_llm(system: str, user: str, retries: int = 3) -> str:
-    """Gemini Flash API 호출 with 재시도"""
+    """Claude API 호출 with 재시도"""
     client = _get_client()
-    prompt = f"{system}\n\n{user}"
 
     for attempt in range(retries):
         try:
-            resp = client.models.generate_content(
+            resp = client.messages.create(
                 model=MODEL,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    temperature=TEMPERATURE,
-                    max_output_tokens=MAX_TOKENS,
-                    thinking_config=types.ThinkingConfig(thinking_budget=0),
-                ),
+                max_tokens=MAX_TOKENS,
+                temperature=TEMPERATURE,
+                system=system,
+                messages=[{"role": "user", "content": user}],
             )
-            return _extract_text(resp)
+            return resp.content[0].text
         except Exception as e:
             wait = 5 * (attempt + 1)
-            logger.warning(f"Gemini 호출 실패 (시도 {attempt+1}/3): {e}. {wait}초 대기")
+            logger.warning(f"Claude 호출 실패 (시도 {attempt+1}/3): {e}. {wait}초 대기")
             time.sleep(wait)
 
-    logger.error("Gemini 최종 실패, 빈 문자열 반환")
+    logger.error("Claude 최종 실패, 빈 문자열 반환")
     return ""
 
 
@@ -97,7 +79,6 @@ def _extract_json_object(text: str) -> str:
 
 def parse_json_response(text: str) -> dict[str, Any]:
     """LLM 응답에서 JSON 블록 추출"""
-    # 마크다운 코드블록 안의 텍스트만 추출
     block = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
     if block:
         text = block.group(1)
@@ -106,7 +87,6 @@ def parse_json_response(text: str) -> dict[str, Any]:
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        # trailing comma 등 흔한 LLM 출력 오류 정리 후 재시도
         cleaned = re.sub(r",\s*([}\]])", r"\1", text)
         try:
             return json.loads(cleaned)

@@ -63,6 +63,10 @@ if summaries:
             "평가 날짜": m["eval_date"],
             "평균수익률": m["avg_return"],
             "적중률": m["hit_rate"],
+            "ARR": m.get("arr", 0.0) or 0.0,
+            "MDD": m.get("mdd", 0.0) or 0.0,
+            "소르티노": m.get("sortino", 0.0) or 0.0,
+            "칼마": m.get("calmar", 0.0) or 0.0,
             "종목수": m["stock_count"],
         })
     perf_df = pd.DataFrame(rows).sort_values("포트폴리오 날짜")
@@ -116,12 +120,23 @@ with right:
 
     if summary:
         m = summary.get("metadata", summary)
-        c1, c2, c3, c4 = st.columns(4)
         avg_ret = m["avg_return"]
+        arr = m.get("arr", 0.0) or 0.0
+        mdd = m.get("mdd", 0.0) or 0.0
+        sortino = m.get("sortino", 0.0) or 0.0
+        calmar = m.get("calmar", 0.0) or 0.0
+
+        c1, c2, c3, c4 = st.columns(4)
         c1.metric("평균수익률", f"{avg_ret:+.1%}", delta_color="normal" if avg_ret >= 0 else "inverse")
         c2.metric("적중률", f"{m['hit_rate']:.0%}")
         c3.metric("평가 종목", f"{m['stock_count']}개")
         c4.metric("평가 기준일", str(m.get("eval_date", "-")))
+
+        r1, r2, r3, r4 = st.columns(4)
+        r1.metric("ARR (연환산)", f"{arr:+.1%}", delta_color="normal" if arr >= 0 else "inverse")
+        r2.metric("MDD", f"{mdd:.1%}", delta_color="inverse" if mdd < 0 else "normal")
+        r3.metric("소르티노", f"{sortino:.2f}")
+        r4.metric("칼마", f"{calmar:.2f}")
 
         summary_text = summary.get("summary_text", summary.get("text", ""))
         if summary_text:

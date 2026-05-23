@@ -1,37 +1,39 @@
-"""로컬 임베딩 (KR-SBERT) — OpenAI API 불필요, 완전 무료"""
+"""OpenAI 임베딩 (text-embedding-3-small, 1536차원)"""
 
 from typing import List
 
 from loguru import logger
 
-# 한국어 특화 SBERT 모델 (CPU 동작, 768차원)
-_MODEL_NAME = "snunlp/KR-SBERT-V40K-klueNLI-augSTS"
-EMBED_DIM = 768
+from config import OPENAI_API_KEY, SETTINGS
 
-_model = None
+_MODEL_NAME = SETTINGS["llm"]["embedding_model"]
+EMBED_DIM = 1536  # text-embedding-3-small 차원
 
-
-def _get_model():
-    global _model
-    if _model is None:
-        from sentence_transformers import SentenceTransformer
-        logger.info(f"KR-SBERT 모델 로딩: {_MODEL_NAME}")
-        _model = SentenceTransformer(_MODEL_NAME)
-    return _model
+_client = None
 
 
-def embed_texts(texts: List[str], batch_size: int = 64) -> List[List[float]]:
-    """텍스트 목록 → 임베딩 벡터 목록 (로컬 CPU 실행)"""
-    model = _get_model()
-    # 빈 문자열 방지
+def _get_client():
+    global _client
+    if _client is None:
+        import openai
+        _client = openai.OpenAI(api_key=OPENAI_API_KEY)
+    return _client
+
+
+def embed_texts(texts: List[str], batch_size: int = 100) -> List[List[float]]:
+    """텍스트 목록 → 임베딩 벡터 목록 (OpenAI API)"""
+    client = _get_client()
     clean = [t if t.strip() else "데이터 없음" for t in texts]
-    embeddings = model.encode(
-        clean,
-        batch_size=batch_size,
-        show_progress_bar=len(clean) > 50,
-        convert_to_numpy=True,
-    )
-    return embeddings.tolist()
+
+    results: List[List[float]] = []
+    for i in range(0, len(clean), batch_size):
+        batch = clean[i:i + batch_size]
+        resp = client.embeddings.create(model=_MODEL_NAME, input=batch)
+        results.extend(item.embedding for item in resp.data)
+        if len(clean) > batch_size:
+            logger.debug(f"임베딩 진행: {min(i + batch_size, len(clean))}/{len(clean)}")
+
+    return results
 
 
 def embed_single(text: str) -> List[float]:

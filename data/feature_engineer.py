@@ -102,6 +102,28 @@ class FeatureEngineer:
 
     # ── 상대 강도 (시장/섹터 대비) ────────────────────────────
 
+    def get_52w_position(self, df: pd.DataFrame, date: str) -> dict:
+        """52주 고점/저점 대비 현재가 위치 + 현재가"""
+        available = df.index.strftime("%Y-%m-%d")
+        valid = available[available <= date]
+        if valid.empty:
+            return {}
+        actual_date = valid[-1]
+        row = df[df.index.strftime("%Y-%m-%d") == actual_date].iloc[-1]
+        close = float(row.get("close", 0))
+        if close <= 0:
+            return {}
+        window_52w = df[df.index.strftime("%Y-%m-%d") <= actual_date].tail(252)
+        result = {"current_price": int(close)}
+        if not window_52w.empty:
+            high_52w = float(window_52w["high"].max())
+            low_52w  = float(window_52w["low"].min())
+            if high_52w > 0:
+                result["pct_from_52w_high"] = round(close / high_52w - 1, 4)
+            if low_52w > 0:
+                result["pct_from_52w_low"]  = round(close / low_52w  - 1, 4)
+        return result
+
     def add_relative_strength(self, df: pd.DataFrame,
                                market_df: pd.DataFrame) -> pd.DataFrame:
         """KOSPI 대비 상대수익률 추가"""

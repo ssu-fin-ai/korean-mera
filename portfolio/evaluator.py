@@ -2,6 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
+import math
 import threading
 
 import pandas as pd
@@ -171,8 +172,30 @@ def run_evaluation(portfolio_date: str, eval_date: str, collector) -> dict:
         logger.warning(f"평가 가능한 종목 없음: {portfolio_date}")
         return {}
 
-    avg_return = sum(e["actual_return"] for e in stock_evals) / len(stock_evals)
+    returns = [e["actual_return"] for e in stock_evals]
+    avg_return = sum(returns) / len(returns)
     hit_rate = sum(1 for e in stock_evals if e["correct"]) / len(stock_evals)
+
+    # 리스크 지표 (보유기간 5일 기준 연환산)
+    hold_days = SETTINGS.get("portfolio", {}).get("hold_days", 5)
+    periods_per_year = 252 / hold_days
+    arr = float((1 + avg_return) ** periods_per_year - 1)
+
+    cum, peak, mdd = 1.0, 1.0, 0.0
+    for r in returns:
+        cum *= (1 + r)
+        peak = max(peak, cum)
+        mdd = min(mdd, (cum - peak) / peak)
+
+    downside = [r for r in returns if r < 0]
+    if len(downside) >= 2:
+        down_mean = sum(downside) / len(downside)
+        down_std = math.sqrt(sum((r - down_mean) ** 2 for r in downside) / (len(downside) - 1))
+        sortino = float(avg_return / down_std * math.sqrt(periods_per_year)) if down_std > 0 else 0.0
+    else:
+        sortino = 0.0
+
+    calmar = float(arr / abs(mdd)) if mdd != 0 else 0.0
 
     summary = _summarize_evaluation(portfolio_date, stock_evals, avg_return, hit_rate)
 
@@ -183,10 +206,15 @@ def run_evaluation(portfolio_date: str, eval_date: str, collector) -> dict:
         summary=summary,
         avg_return=avg_return,
         hit_rate=hit_rate,
+        arr=arr,
+        mdd=mdd,
+        sortino=sortino,
+        calmar=calmar,
     )
 
     logger.info(
-        f"평가 완료: 평균수익 {avg_return:+.1%} | 적중률 {hit_rate:.0%} | {len(stock_evals)}종목"
+        f"평가 완료: 평균수익 {avg_return:+.1%} | 적중률 {hit_rate:.0%} | "
+        f"ARR {arr:+.1%} | MDD {mdd:.1%} | 소르티노 {sortino:.2f} | {len(stock_evals)}종목"
     )
     return {
         "portfolio_date": portfolio_date,
@@ -194,5 +222,9 @@ def run_evaluation(portfolio_date: str, eval_date: str, collector) -> dict:
         "stock_count": len(stock_evals),
         "avg_return": avg_return,
         "hit_rate": hit_rate,
+        "arr": arr,
+        "mdd": mdd,
+        "sortino": sortino,
+        "calmar": calmar,
         "summary": summary,
     }
