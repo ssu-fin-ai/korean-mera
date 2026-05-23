@@ -454,8 +454,11 @@ elif section == "📋 월별 vs 주별 비교":
         def _row_bg(row):
             try:
                 v = float(str(row["평균수익"]).replace("%","").replace("+",""))
-                bg = "#0d3320" if v>0 else "#3a0d0d"
-                return [f"background-color:{bg}"]*len(row)
+                if v > 0:
+                    style = "background-color:#1a4d2e; color:#6ee89a; font-weight:bold"
+                else:
+                    style = "background-color:#4d1a1a; color:#f08080; font-weight:bold"
+                return [style]*len(row)
             except: return [""]*len(row)
 
         st.dataframe(disp.style.apply(_row_bg, axis=1),

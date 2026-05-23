@@ -18,7 +18,8 @@ from backtest_2026 import MONTHLY_SCHEDULE, WEEKLY_SCHEDULE
 BACKTEST_DIR = ROOT / "reports" / "backtest_2026"
 EXPERTS = ["growth", "value", "theme", "dividend", "crisis"]
 
-SCHEDULE_MAP = {p: e for p, e in MONTHLY_SCHEDULE + WEEKLY_SCHEDULE}
+# 월별·주별을 각각 유지 (겹치는 날짜의 eval_date 덮어쓰기 방지)
+ALL_EVALS = list(dict.fromkeys(MONTHLY_SCHEDULE + WEEKLY_SCHEDULE))
 
 
 def upload():
@@ -29,11 +30,9 @@ def upload():
     total_picks = 0
     total_evals = 0
 
+    # ── picks: 날짜 디렉터리 기준 (중복 없음) ──
     for date_dir in sorted(BACKTEST_DIR.glob("2026*")):
         port_date = date_dir.name
-        eval_date = SCHEDULE_MAP.get(port_date)
-
-        # ── picks 업로드 ──
         for expert in EXPERTS + ["combined"]:
             fname = f"{expert}_picks.json" if expert != "combined" else "combined_portfolio.json"
             f = date_dir / fname
@@ -42,15 +41,18 @@ def upload():
             picks = json.loads(f.read_text(encoding="utf-8"))
             saved = store.save_picks(port_date, expert, picks)
             total_picks += saved
-            logger.info(f"  [{port_date}] {expert}: {saved}종목 picks 저장")
+            if saved:
+                logger.info(f"  [{port_date}] {expert}: {saved}종목 picks 저장")
 
-        # ── eval 업로드 ──
-        if eval_date:
-            eval_file = date_dir / f"eval_{eval_date}.json"
-            if eval_file.exists():
-                results = json.loads(eval_file.read_text(encoding="utf-8"))
-                store.save_eval(port_date, eval_date, results)
-                total_evals += 1
+    # ── eval: 월별/주별 각각 순회 (겹치는 날짜도 각자 eval_date로 저장) ──
+    for port_date, eval_date in ALL_EVALS:
+        eval_file = BACKTEST_DIR / port_date / f"eval_{eval_date}.json"
+        if not eval_file.exists():
+            logger.warning(f"  [{port_date}->{eval_date}] eval 파일 없음, 스킵")
+            continue
+        results = json.loads(eval_file.read_text(encoding="utf-8"))
+        store.save_eval(port_date, eval_date, results)
+        total_evals += 1
 
     logger.info(f"=== 업로드 완료: picks {total_picks}건, eval {total_evals}회 ===")
 
