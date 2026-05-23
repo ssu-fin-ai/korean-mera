@@ -14,6 +14,7 @@ st.set_page_config(
 
 pg = st.navigation([
     st.Page("pages/2_백테스트_2026.py", title="📊 백테스트 2026"),
+    st.Page("pages/3_백테스트_2025.py", title="📅 백테스트 2025"),
     st.Page("pages/포트폴리오_대시보드.py", title="📈 포트폴리오 대시보드"),
 ])
 pg.run()
