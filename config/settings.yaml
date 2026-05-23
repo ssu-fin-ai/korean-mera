@@ -28,7 +28,7 @@ agents:
     - crisis                      # 위기/급락
 
 portfolio:
-  top_n: 20                       # 최종 포트폴리오 종목 수
+  top_n: 5                        # 최종 포트폴리오 종목 수 (전문가당 5종목과 동일 기준)
   rebalance_freq: "weekly"        # daily | weekly
   signal_threshold: 0.60          # BUY 신뢰도 최소값
 

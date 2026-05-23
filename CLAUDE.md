@@ -2,12 +2,12 @@
 
 ## 프로젝트 개요
 
-MERA 논문 기반 한국주식 AI 에이전트. GPU 없이 Gemini Flash + KR-SBERT로 동작.
+MERA 논문 기반 한국주식 AI 에이전트. GPU 없이 Claude + OpenAI 임베딩으로 동작.
 
 - 브랜치: `feat/gemini-flash-kr-sbert`
 - Python: 3.13 (Windows, `py` 명령어 사용)
-- LLM: `gemini-2.5-flash` (thinking 비활성화 — `thinking_budget=0`)
-- 임베딩: `snunlp/KR-SBERT-V40K-klueNLI-augSTS` (로컬)
+- LLM: `claude-sonnet-4-6` (Anthropic API)
+- 임베딩: `text-embedding-3-small` (OpenAI API, 1536차원)
 
 ## 핵심 명령어
 
@@ -41,18 +41,19 @@ collector.py → feature_engineer.py → embedder.py → store.py (ChromaDB)
 
 | 설정 | 값 | 비고 |
 |------|----|------|
-| `llm.model` | `gemini-2.5-flash` | thinking_budget=0으로 속도 최적화 |
+| `llm.model` | `claude-sonnet-4-6` | Anthropic Claude API |
 | `llm.max_tokens` | `8192` | JSON 잘림 방지 |
 | `pipeline.workers` | `10` | ThreadPoolExecutor 병렬 처리 |
-| `pipeline.api_concurrency` | `5` | Gemini 동시 호출 수 |
-| `portfolio.top_n` | `20` | 최종 BUY 종목 수 |
+| `pipeline.api_concurrency` | `5` | Claude 동시 호출 수 |
+| `portfolio.top_n` | `5` | 최종 BUY 종목 수 (전문가당 5종목과 동일 기준) |
 | `portfolio.signal_threshold` | `0.60` | BUY 최소 신뢰도 |
 
 ## 환경 변수 (`.env`)
 
 ```
-GOOGLE_API_KEY=...   # 필수: Gemini API
-DART_API_KEY=...     # 선택: DART 공시 데이터
+ANTHROPIC_API_KEY=...  # 필수: Claude API
+OPENAI_API_KEY=...     # 필수: 임베딩 (text-embedding-3-small)
+DART_API_KEY=...       # 선택: DART 공시 데이터
 ```
 
 ## 데이터 파이프라인 주의사항
@@ -64,21 +65,20 @@ DART_API_KEY=...     # 선택: DART 공시 데이터
 
 ## JSON 파싱
 
-Gemini는 마크다운 코드블록(` ```json `)으로 응답. `parse_json_response()`가 처리:
+Claude는 마크다운 코드블록(` ```json `)으로 응답. `parse_json_response()`가 처리:
 1. ` ```json...``` ` 블록 추출
 2. `_extract_json_object()` — 중괄호 깊이 추적으로 완전한 JSON 추출
 3. trailing comma 자동 정리 후 재시도
 
 ## 성능
 
-- 400종목 처리: **약 7분** (workers=10, thinking 비활성화)
-- thinking 활성화 시: 응답당 20~45초 → 사용 금지
+- 400종목 처리: **약 7분** (workers=10)
 
 ## 파일 역할 요약
 
 | 파일 | 역할 |
 |------|------|
-| `agents/base.py` | Gemini API 호출, JSON 파싱 |
+| `agents/base.py` | Claude API 호출, JSON 파싱 |
 | `agents/gate_agent.py` | GateNet: 어떤 전문가 에이전트 쓸지 결정 |
 | `agents/experts.py` | growth/value/theme/dividend/crisis 5개 에이전트 |
 | `data/collector.py` | OHLCV 수집 (pykrx fallback → FDR) |
