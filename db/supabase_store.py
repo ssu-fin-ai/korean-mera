@@ -227,6 +227,142 @@ class EvaluationStore:
         return data if status == 200 else []
 
 
+class BacktestStore:
+    """2026 백테스트 picks / eval 결과를 Supabase에 저장
+
+    테이블:
+      backtest_picks       - 전문가별 종목 선정 결과
+      backtest_eval        - 전문가별 기간 평가 요약
+      backtest_eval_stocks - 전문가별 종목별 실제 수익률
+    """
+
+    PICKS_TABLE = "backtest_picks"
+    EVAL_TABLE = "backtest_eval"
+    STOCKS_TABLE = "backtest_eval_stocks"
+
+    # ── 저장 ─────────────────────────────────────────────────────
+
+    def save_picks(self, portfolio_date: str, expert: str, picks: list[dict]) -> int:
+        if not picks:
+            return 0
+        rows = [
+            {
+                "portfolio_date": portfolio_date,
+                "expert": expert,
+                "ticker": p.get("ticker", ""),
+                "name": p.get("name", ""),
+                "signal": p.get("signal", "HOLD"),
+                "confidence": float(p.get("confidence") or 0),
+                "target_return": float(p.get("target_return") or p.get("avg_target_return") or 0),
+                "horizon_days": int(p.get("horizon_days") or p.get("avg_horizon_days") or 10),
+                "score": float(p.get("score") or p.get("composite_score") or p.get("avg_score") or 5),
+                "reason": str(p.get("reason", "")),
+                "pros": json.dumps(p.get("pros") or [], ensure_ascii=False),
+                "cons": json.dumps(p.get("cons") or [], ensure_ascii=False),
+            }
+            for p in picks
+        ]
+        status, body = _upsert(self.PICKS_TABLE, rows, "portfolio_date,expert,ticker")
+        if status not in (200, 201):
+            logger.error(f"BacktestStore picks 저장 실패: {status} {body[:200]}")
+            return 0
+        return len(rows)
+
+    def save_eval(self, portfolio_date: str, eval_date: str, results: dict) -> None:
+        """results: {expert: {avg_return, hit_rate, stock_count, stocks:[...]}}"""
+        eval_rows = []
+        stock_rows = []
+
+        for expert, r in results.items():
+            eval_rows.append({
+                "portfolio_date": portfolio_date,
+                "eval_date": eval_date,
+                "expert": expert,
+                "avg_return": float(r.get("avg_return", 0)),
+                "hit_rate": float(r.get("hit_rate", 0)),
+                "stock_count": int(r.get("stock_count", 0)),
+            })
+            for s in r.get("stocks", []):
+                stock_rows.append({
+                    "portfolio_date": portfolio_date,
+                    "eval_date": eval_date,
+                    "expert": expert,
+                    "ticker": s.get("ticker", ""),
+                    "name": s.get("name", ""),
+                    "target_return": float(s.get("target_return", 0)),
+                    "actual_return": float(s.get("actual_return", 0)),
+                    "hit": bool(s.get("hit", False)),
+                    "reason": str(s.get("reason", "")),
+                })
+
+        if eval_rows:
+            status, body = _upsert(self.EVAL_TABLE, eval_rows, "portfolio_date,expert")
+            if status not in (200, 201):
+                logger.error(f"BacktestStore eval 저장 실패: {status} {body[:200]}")
+
+        if stock_rows:
+            status, body = _upsert(self.STOCKS_TABLE, stock_rows, "portfolio_date,expert,ticker")
+            if status not in (200, 201):
+                logger.error(f"BacktestStore stocks 저장 실패: {status} {body[:200]}")
+
+        logger.info(f"BacktestStore: {portfolio_date}→{eval_date} 저장 ({len(results)}개 전문가)")
+
+    # ── 조회 ─────────────────────────────────────────────────────
+
+    def get_picks(self, portfolio_date: str, expert: str) -> list[dict]:
+        status, data = _get(
+            _rest(f"{self.PICKS_TABLE}?portfolio_date=eq.{portfolio_date}&expert=eq.{expert}&select=*")
+        )
+        if status != 200:
+            return []
+        for row in data:
+            for field in ("pros", "cons"):
+                if isinstance(row.get(field), str):
+                    try:
+                        row[field] = json.loads(row[field])
+                    except Exception:
+                        row[field] = []
+        return data
+
+    def get_eval(self, portfolio_date: str, eval_date: str) -> dict:
+        """반환: {expert: {avg_return, hit_rate, stock_count, stocks:[...]}}"""
+        status, evals = _get(
+            _rest(f"{self.EVAL_TABLE}?portfolio_date=eq.{portfolio_date}&eval_date=eq.{eval_date}&select=*")
+        )
+        if status != 200 or not evals:
+            return {}
+
+        status2, stocks = _get(
+            _rest(f"{self.STOCKS_TABLE}?portfolio_date=eq.{portfolio_date}&eval_date=eq.{eval_date}&select=*")
+        )
+        stocks = stocks if status2 == 200 else []
+
+        stock_map: dict[str, list] = {}
+        for s in stocks:
+            stock_map.setdefault(s["expert"], []).append(s)
+
+        result = {}
+        for e in evals:
+            exp = e["expert"]
+            result[exp] = {
+                "portfolio_date": portfolio_date,
+                "eval_date": eval_date,
+                "avg_return": e["avg_return"],
+                "hit_rate": e["hit_rate"],
+                "stock_count": e["stock_count"],
+                "stocks": stock_map.get(exp, []),
+            }
+        return result
+
+    def list_portfolio_dates(self) -> list[str]:
+        status, data = _get(
+            _rest(f"{self.PICKS_TABLE}?select=portfolio_date&order=portfolio_date.asc")
+        )
+        if status != 200:
+            return []
+        return sorted({r["portfolio_date"] for r in data})
+
+
 def init_tables() -> None:
     """테이블이 없으면 생성 (멱등)"""
     ddl_list = [
@@ -256,6 +392,39 @@ def init_tables() -> None:
             confidence_score FLOAT8, miss_reason TEXT, lesson TEXT,
             created_at TIMESTAMPTZ DEFAULT NOW(),
             CONSTRAINT portfolio_eval_stocks_uq UNIQUE(portfolio_date, ticker)
+        )""",
+        """CREATE TABLE IF NOT EXISTS backtest_picks (
+            id BIGSERIAL PRIMARY KEY,
+            portfolio_date DATE NOT NULL,
+            expert VARCHAR(20) NOT NULL,
+            ticker VARCHAR(10) NOT NULL,
+            name VARCHAR(200), signal VARCHAR(10),
+            confidence FLOAT8, target_return FLOAT8,
+            horizon_days INTEGER, score FLOAT8,
+            reason TEXT, pros TEXT, cons TEXT,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            CONSTRAINT backtest_picks_uq UNIQUE(portfolio_date, expert, ticker)
+        )""",
+        """CREATE TABLE IF NOT EXISTS backtest_eval (
+            id BIGSERIAL PRIMARY KEY,
+            portfolio_date DATE NOT NULL,
+            eval_date DATE NOT NULL,
+            expert VARCHAR(20) NOT NULL,
+            avg_return FLOAT8, hit_rate FLOAT8, stock_count INTEGER,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            CONSTRAINT backtest_eval_uq UNIQUE(portfolio_date, expert)
+        )""",
+        """CREATE TABLE IF NOT EXISTS backtest_eval_stocks (
+            id BIGSERIAL PRIMARY KEY,
+            portfolio_date DATE NOT NULL,
+            eval_date DATE NOT NULL,
+            expert VARCHAR(20) NOT NULL,
+            ticker VARCHAR(10) NOT NULL,
+            name VARCHAR(200),
+            target_return FLOAT8, actual_return FLOAT8,
+            hit BOOLEAN, reason TEXT,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            CONSTRAINT backtest_eval_stocks_uq UNIQUE(portfolio_date, expert, ticker)
         )""",
     ]
     for ddl in ddl_list:

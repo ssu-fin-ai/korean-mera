@@ -11,8 +11,11 @@ import pandas as pd
 import streamlit as st
 
 from config import ROOT
+from db.supabase_store import BacktestStore
 
 BACKTEST_DIR = ROOT / "reports" / "backtest_2026"
+
+_store = BacktestStore()
 
 MONTHLY_SCHEDULE = [
     ("20260102", "20260130"),
@@ -58,20 +61,36 @@ def _fmt(v, f="+.1%"):
     return f"{v:{f}}" if v is not None else "-"
 
 
-# ── 데이터 로더 ─────────────────────────────────────────────────
+# ── 데이터 로더 (DB 우선, 로컬 fallback) ────────────────────────
 
-@st.cache_data
+def _to_dash(d: str) -> str:
+    return f"{d[:4]}-{d[4:6]}-{d[6:]}" if len(d) == 8 and "-" not in d else d
+
+def _from_dash(d: str) -> str:
+    return d.replace("-", "") if d else d
+
+@st.cache_data(ttl=300)
 def load_picks(port_date, expert):
-    f = BACKTEST_DIR / port_date / f"{expert}_picks.json"
+    rows = _store.get_picks(_to_dash(port_date), expert)
+    if rows:
+        return rows
+    fname = f"{expert}_picks.json" if expert != "combined" else "combined_portfolio.json"
+    f = BACKTEST_DIR / port_date / fname
     return json.loads(f.read_text(encoding="utf-8")) if f.exists() else []
 
-@st.cache_data
+@st.cache_data(ttl=300)
 def load_combined(port_date):
+    rows = _store.get_picks(_to_dash(port_date), "combined")
+    if rows:
+        return rows
     f = BACKTEST_DIR / port_date / "combined_portfolio.json"
     return json.loads(f.read_text(encoding="utf-8")) if f.exists() else []
 
-@st.cache_data
+@st.cache_data(ttl=300)
 def load_eval(port_date, eval_date):
+    result = _store.get_eval(_to_dash(port_date), _to_dash(eval_date))
+    if result:
+        return result
     f = BACKTEST_DIR / port_date / f"eval_{eval_date}.json"
     return json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
 
