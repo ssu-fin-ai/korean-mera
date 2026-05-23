@@ -296,12 +296,12 @@ class BacktestStore:
                 })
 
         if eval_rows:
-            status, body = _upsert(self.EVAL_TABLE, eval_rows, "portfolio_date,expert")
+            status, body = _upsert(self.EVAL_TABLE, eval_rows, "portfolio_date,eval_date,expert")
             if status not in (200, 201):
                 logger.error(f"BacktestStore eval 저장 실패: {status} {body[:200]}")
 
         if stock_rows:
-            status, body = _upsert(self.STOCKS_TABLE, stock_rows, "portfolio_date,expert,ticker")
+            status, body = _upsert(self.STOCKS_TABLE, stock_rows, "portfolio_date,eval_date,expert,ticker")
             if status not in (200, 201):
                 logger.error(f"BacktestStore stocks 저장 실패: {status} {body[:200]}")
 
@@ -363,6 +363,24 @@ class BacktestStore:
         return sorted({r["portfolio_date"] for r in data})
 
 
+def migrate_eval_constraints() -> None:
+    """backtest_eval/stocks unique constraint에 eval_date 추가 (멱등)"""
+    sqls = [
+        "ALTER TABLE backtest_eval DROP CONSTRAINT IF EXISTS backtest_eval_uq",
+        "ALTER TABLE backtest_eval ADD CONSTRAINT backtest_eval_uq UNIQUE(portfolio_date, eval_date, expert)",
+        "ALTER TABLE backtest_eval_stocks DROP CONSTRAINT IF EXISTS backtest_eval_stocks_uq",
+        "ALTER TABLE backtest_eval_stocks ADD CONSTRAINT backtest_eval_stocks_uq UNIQUE(portfolio_date, eval_date, expert, ticker)",
+        "DELETE FROM backtest_eval",
+        "DELETE FROM backtest_eval_stocks",
+    ]
+    for sql in sqls:
+        try:
+            _pg_query(sql)
+            logger.info(f"마이그레이션: {sql[:60]}")
+        except Exception as e:
+            logger.warning(f"마이그레이션 오류 (무시 가능): {e}")
+
+
 def init_tables() -> None:
     """테이블이 없으면 생성 (멱등)"""
     ddl_list = [
@@ -412,7 +430,7 @@ def init_tables() -> None:
             expert VARCHAR(20) NOT NULL,
             avg_return FLOAT8, hit_rate FLOAT8, stock_count INTEGER,
             created_at TIMESTAMPTZ DEFAULT NOW(),
-            CONSTRAINT backtest_eval_uq UNIQUE(portfolio_date, expert)
+            CONSTRAINT backtest_eval_uq UNIQUE(portfolio_date, eval_date, expert)
         )""",
         """CREATE TABLE IF NOT EXISTS backtest_eval_stocks (
             id BIGSERIAL PRIMARY KEY,
@@ -424,7 +442,7 @@ def init_tables() -> None:
             target_return FLOAT8, actual_return FLOAT8,
             hit BOOLEAN, reason TEXT,
             created_at TIMESTAMPTZ DEFAULT NOW(),
-            CONSTRAINT backtest_eval_stocks_uq UNIQUE(portfolio_date, expert, ticker)
+            CONSTRAINT backtest_eval_stocks_uq UNIQUE(portfolio_date, eval_date, expert, ticker)
         )""",
     ]
     for ddl in ddl_list:

@@ -12,7 +12,7 @@ import json
 from loguru import logger
 
 from config import ROOT
-from db.supabase_store import BacktestStore, init_tables
+from db.supabase_store import BacktestStore, init_tables, migrate_eval_constraints
 from backtest_2026 import MONTHLY_SCHEDULE, WEEKLY_SCHEDULE
 
 BACKTEST_DIR = ROOT / "reports" / "backtest_2026"
@@ -25,6 +25,8 @@ ALL_EVALS = list(dict.fromkeys(MONTHLY_SCHEDULE + WEEKLY_SCHEDULE))
 def upload():
     logger.info("Supabase 테이블 초기화...")
     init_tables()
+    logger.info("eval constraint 마이그레이션 (eval_date 추가)...")
+    migrate_eval_constraints()
 
     store = BacktestStore()
     total_picks = 0
