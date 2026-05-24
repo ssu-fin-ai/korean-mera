@@ -45,9 +45,10 @@ class FeatureEngineer:
 
         macd = ta.macd(df["close"])
         if macd is not None and not macd.empty:
-            df["macd"] = macd.iloc[:, 0]
-            df["macd_signal"] = macd.iloc[:, 1]
-            df["macd_diff"] = macd.iloc[:, 2]
+            # pandas_ta 컬럼 순서: MACD_12_26_9, MACDh_12_26_9, MACDs_12_26_9
+            df["macd"] = macd.iloc[:, 0]          # MACD 선 (EMA12 - EMA26)
+            df["macd_signal"] = macd.iloc[:, 2]   # 시그널 선 (EMA9 of MACD)
+            df["macd_diff"] = df["macd"] - df["macd_signal"]  # 히스토그램 (양수=골든크로스)
 
         adx = ta.adx(df["high"], df["low"], df["close"])
         if adx is not None and not adx.empty:
