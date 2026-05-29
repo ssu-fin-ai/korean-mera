@@ -1,0 +1,222 @@
+# 데이터 아키텍처 가이드
+
+## 1. ChromaDB 구조
+
+### 1.1 컬렉션 구성
+
+| 컬렉션 | 용도 |
+|--------|------|
+| `stock_patterns` | 주가 패턴 임베딩 저장 (RAG용) — **실제 사용** |
+| `news_filings` | DART 공시/뉴스 임베딩 저장 — **미구현 (클래스만 존재)** |
+
+### 1.2 `stock_patterns` 컬렉션 — 저장 구조
+
+1건 = 특정 종목의 특정 날짜 기술적 패턴 스냅샷
+
+| 필드 | 타입 | 내용 | 예시 |
+|------|------|------|------|
+| **ID** | string | `{ticker}_{날짜}` | `005930_2024-03-15` |
+| **Text** | string | 기술지표 자연어 텍스트 (임베딩 원본) | 아래 참고 |
+| **Embedding** | float[1536] | OpenAI text-embedding-3-small 벡터 | - |
+| **label_5d** | string | 5거래일 후 실제 수익률 | `"0.032"` |
+| **label_10d** | string | 10거래일 후 실제 수익률 | `"0.051"` |
+| **label_20d** | string | 20거래일 후 실제 수익률 | `"0.078"` |
+| **ticker** | string | 종목코드 | `"005930"` |
+| **name** | string | 종목명 | `"삼성전자"` |
+| **sector** | string | 섹터 | `"반도체"` |
+| **market** | string | 시장 | `"KOSPI"` |
+| **date** | string | 기준일 | `"2024-03-15"` |
+
+**Text 필드 예시:**
+```
+종목: 005930 삼성전자 | 시장: KOSPI | 섹터: 반도체
+수익률: 5일+3.2% 20일+8.5%
+추세: 강한상승추세 | MA20대비+5.2% MA60대비+8.1%
+RSI: 65(강세) | MACD: 골든크로스/상승세
+볼린저: 상단대(0.72) | 거래량: 급증(2배+)
+역사적변동성(20일): 18.3% | ADX: 28 | MFI: 62
+이후5일수익률: +3.2%
+```
+
+### 1.3 데이터 수집 출처 및 흐름
+
+```
+pykrx / FinanceDataReader
+        ↓
+  OHLCV 일봉 데이터
+        ↓
+  feature_engineer.py
+  (RSI, MACD, BB, ADX, MFI 등 계산)
+        ↓
+  text_generator.py
+  (수치 → 자연어 텍스트 변환)
+        ↓
+  embedder.py
+  (OpenAI API → 1536차원 벡터)
+        ↓
+  ChromaDB (stock_patterns)
+```
+
+| 데이터 | 수집처 | 비고 |
+|--------|--------|------|
+| OHLCV (시가·고가·저가·종가·거래량) | pykrx → FDR fallback | 일별 캐시 |
+| RSI, MACD, BB, ADX, MFI | feature_engineer.py 자체 계산 | TA-Lib 미사용 |
+| KOSPI 대비 상대강도 | pykrx 지수(1001) | FDR(KS11) fallback |
+| label_5d·10d·20d | OHLCV에서 shift 계산 | `close.pct_change(N).shift(-N)` |
+| 임베딩 | OpenAI API | text-embedding-3-small |
+
+### 1.4 DB 구축 / 갱신 시점
+
+| 명령 | 대상 | 샘플링 |
+|------|------|--------|
+| `--mode build_db` | 전체 200종목 × 3년 | 모든 거래일 (~150,000건) |
+| `--mode run` | 오늘 날짜 200종목 | 오늘 하루치 추가 |
+
+---
+
+## 2. 전문가 에이전트 분석 데이터
+
+### 2.1 데이터 수집 흐름
+
+```
+screener_node (ThreadPoolExecutor, workers=3)
+    ↓ 종목당 _collect_ticker() 병렬 실행
+    ↓
+    ├── OHLCV + 기술지표 (snapshot)
+    ├── 재무지표 (financials)
+    ├── DART 공시 (news_text)
+    └── RAG 유사패턴 (retrieved_patterns)
+    ↓
+전문가별 Top-15 후보 선정
+```
+
+### 2.2 Snapshot (기술지표) — 수집처: pykrx / FDR
+
+`feature_engineer.get_snapshot_vector()`로 추출한 당일 기준 벡터
+
+| 지표 | 설명 |
+|------|------|
+| `ret_1d / ret_5d / ret_20d / ret_60d` | 기간별 수익률 |
+| `rsi` | RSI-14 |
+| `macd_diff` | MACD - Signal |
+| `bb_pct` | 볼린저밴드 %B |
+| `volume_ratio` | 거래량 / 20일 평균 거래량 |
+| `hist_vol_20` | 20일 역사적 변동성 |
+| `close_to_ma20 / close_to_ma60` | 이동평균 대비 위치 |
+| `adx` | ADX (추세 강도) |
+| `mfi` | MFI-14 (자금흐름) |
+| `beta_20d` | 20일 베타 (KOSPI 대비) |
+| `relative_strength` | KOSPI 대비 상대강도 |
+
+### 2.3 Financials (재무지표) — 수집처
+
+| 항목 | 수집처 | 캐시 |
+|------|--------|------|
+| PER, PBR, EPS, BPS, DIV, DPS | pykrx `get_market_fundamental()` → 네이버 금융 fallback | 월별 |
+| 매출·영업이익·순이익 (당기·전기) | DART `finstate_all()` | 월별 |
+| ROE, ROA | DART 재무제표 계산 | 월별 |
+| 부채비율, 유동비율, 이자보상배율 | DART 재무제표 계산 | 월별 |
+| FCF, OCF | DART 재무제표 계산 | 월별 |
+| 매출YoY, 영업이익YoY, 순이익YoY | DART 당기/전기 비교 계산 | 월별 |
+| Graham Number | `√(22.5 × EPS × BPS)` 자체 계산 | - |
+| 배당성향 | `DPS / EPS × 100` 자체 계산 | - |
+| 섹터 대비 PER/PBR | `get_sector_avg_fundamental()` | 월별 |
+| 공매도비율 | `get_shorting_data()` (KRX) | 일별 |
+| 52주 고저점 대비 | `get_52w_position()` OHLCV에서 계산 | - |
+| 시가총액 | OHLCV `mktcap` 컬럼 | 일별 |
+| 현재가 | OHLCV 최근 종가 | 일별 |
+
+### 2.4 News/공시 — 수집처: DART API
+
+`collector.get_recent_filings(ticker, days=30, ref_date=date)`
+
+- **분석 날짜 기준** 30일 전 ~ 분석 날짜 공시 조회 (백테스트 미래 정보 유출 방지)
+- `report_nm` (공시명), `rcept_dt` (접수일) — 제목만 수집 (본문 미포함)
+- DART API 키(`DART_API_KEY`) 없으면 빈 값
+- 최신순 Top-5 반환
+
+**수집 공시 종류 (정기보고서 제외):**
+
+| kind | 분류 | 예시 |
+|------|------|------|
+| `B` | 주요사항보고서 | 유상증자, 전환사채, 합병·분할, 자기주식 취득 |
+| `D` | 지분공시 | 최대주주 변경, 임원 주식 매매 |
+| `E` | 기타공시 | 불성실공시, 횡령·배임, 조회공시 |
+
+> `kind="A"` (분기보고서, 사업보고서 등 정기공시)는 투자 신호로서 의미가 낮아 제외
+
+**전문가별 공시 활용 가이드:**
+
+| 전문가 | BUY 가산점 | confidence 하향 |
+|--------|-----------|----------------|
+| growth | 수주·계약 체결 | 유상증자(희석), 전환사채 |
+| value | 자기주식 취득 | 전환사채·유상증자(BPS 희석) |
+| theme | 수주·MOU, 조회공시 확인 | 불성실공시 |
+| dividend | 배당 결정·증액 | 유상증자, 최대주주 변경 |
+| crisis | 조회공시(일시적 악재) | 횡령·배임, 긴급 유상증자 |
+
+### 2.5 RAG 유사패턴 — 수집처: ChromaDB
+
+`pattern_store.query(current_embedding, top_k=5)`
+
+- 현재 패턴 텍스트를 임베딩 → ChromaDB 코사인 유사도 검색
+- Top-5 유사 과거 패턴 반환
+- 반환값: `[{text, metadata, distance}]`
+- metadata에서 `label_5d / label_10d / label_20d` 추출하여 RAG 섹션 생성
+
+### 2.6 전문가별 사용 데이터 요약
+
+| 전문가 | 주요 판단 데이터 | 공시 활용 | RAG 레이블 |
+|--------|----------------|----------|-----------|
+| **growth** | 매출YoY·영업이익YoY·EPS·RSI·거래량·공매도 | ✅ 전체 | label_20d |
+| **value** | PBR·PER·Graham Number·ROE·ROA·FCF·부채비율 | ✅ 전체 | label_20d |
+| **theme** | RSI·거래량비율·52주고점·공시제목 | ✅ 전체 | label_20d |
+| **dividend** | 배당수익률·DPS·배당성향·FCF·OCF·베타 | ✅ 전체 | label_20d |
+| **crisis** | 5일수익률·RSI·BB위치·부채비율·유동비율 | ✅ 전체 | label_20d |
+
+> `--horizon weekly` 실행 시 모든 전문가 RAG 레이블이 `label_5d`로 변경됨
+> 공시는 ChromaDB에 저장되지 않고 매 실행 시 DART API 실시간 조회 후 프롬프트에 직접 주입
+
+---
+
+## 3. 데이터 캐시 구조
+
+```
+cache/
+├── {ticker}_{start}_{end}.parquet   # OHLCV (날짜 바뀌면 재다운로드)
+├── fin_{ticker}_{YYYYMM}.json       # 재무지표 (월별)
+├── sector_map.parquet               # 섹터 매핑 (7일)
+└── shorting_{ticker}_{date}.json    # 공매도 (일별)
+```
+
+---
+
+## 4. 전체 데이터 흐름 요약
+
+```
+외부 데이터 소스
+├── pykrx / FDR     → OHLCV, 지수, PER/PBR/EPS/BPS/DIV
+├── 네이버 금융 API → PER/PBR fallback
+├── DART API        → 재무제표, 공시 목록
+├── KRX             → 공매도 비율
+└── OpenAI API      → 텍스트 임베딩
+
+           ↓ 수집 및 가공
+
+ChromaDB (RAG DB)            screener 후보 데이터
+└─ stock_patterns             ├─ snapshot (기술지표)
+   ├─ text (자연어 패턴)       ├─ financials (재무지표)
+   ├─ embedding (1536d)       ├─ news_text (공시)
+   └─ metadata                └─ retrieved_patterns (RAG)
+      ├─ label_5d·10d·20d
+      └─ ticker·sector·date
+
+           ↓ 전문가 에이전트 입력
+
+[growth] [value] [theme] [dividend] [crisis]
+  각 전문가: snapshot + financials + news + RAG → Claude LLM → BUY/HOLD/SELL
+
+           ↓ aggregator
+
+포트폴리오 (TOP-20, confidence ≥ 0.60)
+```

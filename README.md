@@ -44,6 +44,7 @@ GPU 없이 외부 LLM API만으로 구현한 한국주식 포트폴리오 분석
 |--------|-----------|------|
 | Anthropic | https://console.anthropic.com | LLM 추론 **(필수)** |
 | OpenAI | https://platform.openai.com | 임베딩 **(필수)** |
+| KRX | https://open.krx.co.kr | 시장 데이터 **(필수)** |
 | DART | https://opendart.fss.or.kr | 공시 데이터 (선택) |
 | Supabase | https://supabase.com | 포트폴리오 이력 저장 (선택) |
 
@@ -148,6 +149,8 @@ cp .env.example .env
 # 필수
 ANTHROPIC_API_KEY=sk-ant-...
 OPENAI_API_KEY=sk-...
+KRX_ID=your_krx_id
+KRX_PW=your_krx_password
 
 # 선택: 공시 데이터 (미설정 시 공시 없이 동작)
 DART_API_KEY=...
@@ -173,19 +176,30 @@ ChromaDB에 3년치 과거 패턴을 임베딩하여 저장합니다.
 poetry run py main.py --mode build_db --years 3
 ```
 
-- 소요 시간: 약 30~60분
-- 결과물: `chroma_db/` 디렉토리에 5,900건+ 패턴 저장
-- 비용: OpenAI 임베딩 기준 약 $0.03
+- 소요 시간: 약 140분 (일별 샘플링 기준)
+- 결과물: `chroma_db/` 디렉토리에 약 150,000건 패턴 저장
+- 비용: OpenAI 임베딩 기준 약 $0.36
 
 ### 2단계: 일별 실행
 
 ```bash
-# 오늘 날짜 분석
+# 오늘 날짜 분석 (기본: 월별 분석, 20일 RAG)
 poetry run py main.py --mode run
 
 # 특정 날짜 분석
 poetry run py main.py --mode run --date 20260515
+
+# 주간 분석 (5일 RAG 기준)
+poetry run py main.py --mode run --date 20260515 --horizon weekly
+
+# 월별 분석 (20일 RAG 기준, 기본값)
+poetry run py main.py --mode run --date 20260515 --horizon monthly
 ```
+
+| `--horizon` | RAG 수익률 기준 | 적합한 용도 |
+|-------------|----------------|------------|
+| `weekly` | 5일 후 수익률 | 단기 모멘텀·테마 분석 |
+| `monthly` | 20일 후 수익률 (기본값) | 중장기 가치·배당 분석 |
 
 ### 포트폴리오 평가
 
@@ -441,7 +455,7 @@ korean-mera/
 ## 알려진 이슈
 
 - **pykrx 주말/공휴일 실패** → FinanceDataReader로 자동 fallback
-- **KRX 로그인 오류 메시지** → 정상 동작 (환경변수 KRX_ID/KRX_PW 불필요)
+- **KRX 로그인 실패** → `.env`에 `KRX_ID` / `KRX_PW` 설정 필요 (https://open.krx.co.kr 가입)
 - **Claude 응답 마크다운 코드블록** → `parse_json_response()`가 자동 처리
 
 ---

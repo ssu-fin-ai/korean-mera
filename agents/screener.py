@@ -185,6 +185,8 @@ def screener_node(state: dict) -> dict:
 
     logger.info(f"데이터 수집 완료: {len(all_candidates)}/{len(tickers)}")
 
+    rag_label_key = state.get("rag_label_key", "label_20d")
+
     result: dict = {}
     for expert, scorer in _SCORERS.items():
         scored = [
@@ -193,6 +195,8 @@ def screener_node(state: dict) -> dict:
         ]
         scored.sort(key=lambda x: x[0], reverse=True)
         top = [c for _, c in scored[:TOP_N]]
+        for c in top:
+            c["rag_label_key"] = rag_label_key
         result[f"{expert}_candidates"] = top
         logger.info(f"  {expert}: Top-{len(top)} 후보 선정")
 
@@ -223,7 +227,7 @@ def _collect_ticker(ticker, date, today_dash, start, kospi_df, sector_map,
     retrieved = pattern_store.query(current_emb, top_k=SETTINGS["retrieval"]["top_k"])
 
     news_text = ""
-    filings = collector.get_recent_filings(ticker, days=30)
+    filings = collector.get_recent_filings(ticker, days=30, ref_date=date)
     if filings:
         news_text = generate_news_text(ticker, name, filings)
 

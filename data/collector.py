@@ -249,19 +249,26 @@ class KoreanStockCollector:
 
     # ── DART 공시 ────────────────────────────────────────────
 
-    def get_recent_filings(self, ticker: str, days: int = 30) -> list[dict]:
+    def get_recent_filings(self, ticker: str, days: int = 30, ref_date: str = None) -> list[dict]:
+        """주요사항(B)·지분공시(D)·기타(E) 위주로 조회 — 정기보고서(A) 제외"""
         if self.dart is None:
             return []
         corp_code = self._ticker_to_dart_code(ticker) or ticker
-        start = (datetime.today() - timedelta(days=days)).strftime("%Y-%m-%d")
-        try:
-            df = self.dart.list(corp_code, start=start, kind="A", final="Y")
-            if df is None or df.empty:
-                return []
-            return df[["rcept_dt", "report_nm", "corp_name"]].to_dict("records")
-        except Exception as e:
-            logger.debug(f"DART 공시 조회 실패 ({corp_code}): {e}")
+        ref = datetime.strptime(ref_date, "%Y%m%d") if ref_date else datetime.today()
+        start = (ref - timedelta(days=days)).strftime("%Y-%m-%d")
+        end = ref.strftime("%Y-%m-%d")
+        rows = []
+        for kind in ("B", "D", "E"):
+            try:
+                df = self.dart.list(corp_code, start=start, end=end, kind=kind, final="Y")
+                if df is not None and not df.empty:
+                    rows.append(df[["rcept_dt", "report_nm", "corp_name"]])
+            except Exception as e:
+                logger.debug(f"DART 공시 조회 실패 ({corp_code}, kind={kind}): {e}")
+        if not rows:
             return []
+        combined = pd.concat(rows).sort_values("rcept_dt", ascending=False)
+        return combined.head(5).to_dict("records")
 
     def get_financials(self, ticker: str, date: str) -> dict:
         """PER/PBR/배당수익률(pykrx) + 매출/이익(DART) 통합 재무 데이터.

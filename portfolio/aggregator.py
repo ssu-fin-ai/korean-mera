@@ -129,6 +129,8 @@ def aggregator_node(state: dict) -> dict:
 
     final_portfolio: list[dict] = []
 
+    gate_weights_map: dict = state.get("gate_weights_map", {})
+
     for ticker, picks in ticker_picks.items():
         buy_picks = [
             p for p in picks
@@ -144,8 +146,15 @@ def aggregator_node(state: dict) -> dict:
         avg_ret = round(sum(float(p.get("target_return", 0)) for p in buy_picks) / n, 4)
         avg_days = round(sum(int(p.get("horizon_days", 10)) for p in buy_picks) / n)
 
-        # 복합 점수: 신뢰도×매력도 + 전문가 동의 수 보너스 (전문가당 +0.5)
-        composite = round(avg_conf * avg_score + len(experts) * 0.5, 2)
+        # GateNet 가중치 반영: 전문가별 confidence×score×gate_weight 가중합
+        gate_w = gate_weights_map.get(ticker, {})
+        weighted_scores = [
+            float(p.get("confidence", 0.5)) * int(p.get("score", 5))
+            * gate_w.get(p["expert"], 1.0)
+            for p in buy_picks
+        ]
+        # 복합 점수: gate 가중 평균 + 전문가 동의 수 보너스 (전문가당 +0.5)
+        composite = round(sum(weighted_scores) / n + len(experts) * 0.5, 2)
 
         # 대표 근거: 신뢰도×매력도 최고 전문가
         best = max(buy_picks, key=lambda p: float(p.get("confidence", 0)) * int(p.get("score", 5)))

@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from config import ROOT
 
-REQUIRED_ENV_VARS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]
+REQUIRED_ENV_VARS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "KRX_ID", "KRX_PW"]
 
 
 def check_config():
@@ -34,6 +34,8 @@ def check_config():
             "필수 항목:\n"
             "  ANTHROPIC_API_KEY=sk-ant-...\n"
             "  OPENAI_API_KEY=sk-...\n"
+            "  KRX_ID=your_krx_id\n"
+            "  KRX_PW=your_krx_password\n"
         )
         sys.exit(1)
 
@@ -61,8 +63,9 @@ def cmd_build_db(args):
 def cmd_run(args):
     from scheduler.pipeline import MERAPipeline
     date = args.date if hasattr(args, "date") and args.date else None
+    horizon = args.horizon if hasattr(args, "horizon") and args.horizon else "monthly"
     pipeline = MERAPipeline()
-    report = pipeline.run_daily(date=date)
+    report = pipeline.run_daily(date=date, horizon=horizon)
     print(report)
 
 
@@ -143,6 +146,8 @@ def main():
                         help="분석 날짜 (YYYYMMDD, 기본값: 오늘)")
     parser.add_argument("--years", type=int, default=5,
                         help="히스토리 DB 구축 기간 (년)")
+    parser.add_argument("--horizon", choices=["weekly", "monthly"], default="monthly",
+                        help="분석 기간 (weekly=5일 RAG, monthly=20일 RAG)")
     parser.add_argument("--hold_days", type=int, default=5,
                         help="백테스트 보유 기간 (일)")
     args = parser.parse_args()

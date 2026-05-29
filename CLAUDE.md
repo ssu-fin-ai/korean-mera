@@ -4,6 +4,10 @@
 
 MERA 논문 기반 한국주식 AI 에이전트. GPU 없이 Claude + OpenAI 임베딩으로 동작.
 
+**원본 논문 (MERA, WWW 2025)**
+- 코드: https://github.com/chenchen1104/MERA
+- 논문: https://dl.acm.org/doi/pdf/10.1145/3701716.3715513
+
 - 브랜치: `feat/gemini-flash-kr-sbert`
 - Python: 3.13 (Windows, `py` 명령어 사용)
 - LLM: `claude-sonnet-4-6` (Anthropic API)
@@ -18,8 +22,11 @@ py test_smoke.py
 # DB 구축 (최초 1회)
 py main.py --mode build_db --years 3
 
-# 일별 실행
+# 일별 실행 (월별 분석, 20일 RAG 기본값)
 py main.py --mode run --date 20260515
+
+# 주간 분석 (5일 RAG)
+py main.py --mode run --date 20260515 --horizon weekly
 
 # LLM 연결 테스트
 py test_llm_parse.py
@@ -53,6 +60,8 @@ collector.py → feature_engineer.py → embedder.py → store.py (ChromaDB)
 ```
 ANTHROPIC_API_KEY=...  # 필수: Claude API
 OPENAI_API_KEY=...     # 필수: 임베딩 (text-embedding-3-small)
+KRX_ID=...             # 필수: KRX 시장 데이터
+KRX_PW=...             # 필수: KRX 시장 데이터
 DART_API_KEY=...       # 선택: DART 공시 데이터
 ```
 

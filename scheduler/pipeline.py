@@ -54,8 +54,7 @@ class MERAPipeline:
                 name = sector_map.loc[ticker, "name"] if ticker in sector_map.index else ticker
                 market = sector_map.loc[ticker, "market"] if ticker in sector_map.index else "KOSPI"
 
-                sample_dates = df.resample("ME").last().index
-                sample_dates = [d.strftime("%Y-%m-%d") for d in sample_dates if not pd.isna(d)]
+                sample_dates = [d.strftime("%Y-%m-%d") for d in df.index if not pd.isna(d)]
 
                 ids, texts, embeddings, metas = [], [], [], []
 
@@ -65,7 +64,14 @@ class MERAPipeline:
                         continue
 
                     label_row = df[df.index.strftime("%Y-%m-%d") == date_str]
-                    label_5d = float(label_row["label_5d"].iloc[0]) if not label_row.empty else None
+                    def _lbl(col):
+                        if label_row.empty or col not in label_row.columns:
+                            return None
+                        v = label_row[col].iloc[0]
+                        return float(v) if not pd.isna(v) else None
+                    label_5d  = _lbl("label_5d")
+                    label_10d = _lbl("label_10d")
+                    label_20d = _lbl("label_20d")
 
                     sector = self.collector.get_sector_name(ticker, date_str.replace("-", ""))
 
@@ -82,7 +88,9 @@ class MERAPipeline:
                     metas.append({
                         "ticker": ticker, "name": name, "sector": sector,
                         "market": market, "date": date_str,
-                        "label_5d": str(label_5d) if label_5d is not None else "",
+                        "label_5d":  str(label_5d)  if label_5d  is not None else "",
+                        "label_10d": str(label_10d) if label_10d is not None else "",
+                        "label_20d": str(label_20d) if label_20d is not None else "",
                     })
 
                 if ids:
@@ -98,10 +106,11 @@ class MERAPipeline:
 
     # ── Phase 2: 일별 신호 생성 (LangGraph) ─────────────────────────────────
 
-    def run_daily(self, date: str = None) -> str:
+    def run_daily(self, date: str = None, horizon: str = "monthly") -> str:
         """LangGraph MERA 그래프 실행 → 포트폴리오 리포트 반환"""
         today = date or datetime.today().strftime("%Y%m%d")
         today_dash = f"{today[:4]}-{today[4:6]}-{today[6:]}"
+        rag_label_key = "label_5d" if horizon == "weekly" else "label_20d"
 
         # 이전 포트폴리오 수익률 평가
         self._evaluate_prev_portfolio(today_dash)
@@ -110,8 +119,8 @@ class MERAPipeline:
         from agents.graph import build_mera_graph
         graph = build_mera_graph()
 
-        logger.info(f"LangGraph MERA 실행: {today_dash}")
-        final_state = graph.invoke({"date": today})
+        logger.info(f"LangGraph MERA 실행: {today_dash} | horizon={horizon} ({rag_label_key})")
+        final_state = graph.invoke({"date": today, "rag_label_key": rag_label_key})
 
         report: str = final_state.get("report", f"[{today_dash}] 리포트 생성 실패")
         portfolio: list[dict] = final_state.get("final_portfolio", [])
@@ -206,7 +215,14 @@ class MERAPipeline:
                 sector = self.collector.get_sector_name(ticker, today)
 
                 label_row = df[df.index.strftime("%Y-%m-%d") == today_dash]
-                label_5d = float(label_row["label_5d"].iloc[0]) if not label_row.empty else None
+                def _lbl(col):
+                    if label_row.empty or col not in label_row.columns:
+                        return None
+                    v = label_row[col].iloc[0]
+                    return float(v) if not pd.isna(v) else None
+                label_5d  = _lbl("label_5d")
+                label_10d = _lbl("label_10d")
+                label_20d = _lbl("label_20d")
 
                 text = generate_pattern_text(
                     ticker=ticker, name=name, sector=sector, market=market,
@@ -219,7 +235,9 @@ class MERAPipeline:
                     metadata={
                         "ticker": ticker, "name": name, "sector": sector,
                         "market": market, "date": today_dash,
-                        "label_5d": str(label_5d) if label_5d else "",
+                        "label_5d":  str(label_5d)  if label_5d  is not None else "",
+                        "label_10d": str(label_10d) if label_10d is not None else "",
+                        "label_20d": str(label_20d) if label_20d is not None else "",
                     },
                 )
                 added += 1

@@ -57,16 +57,31 @@ def _pct(v, multiply: bool = False) -> str:
     return f"{'+' if val >= 0 else ''}{val:.1f}%"
 
 
-def _pattern_rets(retrieved: list) -> str:
-    rets = []
-    for p in retrieved[:3]:
-        lbl = p.get("metadata", {}).get("label_5d")
+_LABEL_DAYS = {"label_5d": 5, "label_10d": 10, "label_20d": 20}
+
+
+def _fmt_rag_section(retrieved: list, label_key: str = "label_5d") -> str:
+    """유사 과거 패턴 수익률 통계 섹션 생성"""
+    days = _LABEL_DAYS.get(label_key, 5)
+    valid = []
+    for p in retrieved[:5]:
+        lbl = p.get("metadata", {}).get(label_key)
+        dist = p.get("distance", 1.0)
         if lbl not in (None, "", "N/A"):
             try:
-                rets.append(f"{float(lbl) * 100:+.1f}%")
+                valid.append((round((1 - float(dist)) * 100), float(lbl) * 100))
             except Exception:
                 pass
-    return " | ".join(rets) if rets else ""
+    if not valid:
+        return ""
+    lines = [f"[유사 과거 패턴 (RAG/{days}일 수익률)]"]
+    for i, (sim, ret) in enumerate(valid, 1):
+        lines.append(f"  {i}. 유사도:{sim}% → {days}일후:{ret:+.1f}%")
+    rets = [r for _, r in valid]
+    hit = sum(1 for r in rets if r > 0)
+    avg = sum(rets) / len(rets)
+    lines.append(f"  적중률:{hit}/{len(rets)} | 평균수익:{avg:+.1f}%")
+    return "\n".join(lines)
 
 
 # ── 전문가별 후보 포맷터 ──────────────────────────────────────────────────────
@@ -96,9 +111,11 @@ def _fmt_growth(c: dict) -> str:
     sr = f.get("short_ratio")
     if sr is not None:
         lines.append(f"공매도:{sr}% | 5일평균:{f.get('short_ratio_5d_avg', 'N/A')}%")
-    pr = _pattern_rets(c.get("retrieved_patterns", []))
-    if pr:
-        lines.append(f"유사패턴수익률: {pr}")
+    if c.get("news_text"):
+        lines.append(f"최근공시:\n{c['news_text']}")
+    rag = _fmt_rag_section(c.get("retrieved_patterns", []), label_key=c.get("rag_label_key", "label_20d"))
+    if rag:
+        lines.append(rag)
     return "\n".join(lines)
 
 
@@ -133,6 +150,11 @@ def _fmt_value(c: dict) -> str:
     l52 = f.get("pct_from_52w_low")
     if h52 is not None:
         lines.append(f"52주고점대비:{_pct(h52, multiply=True)} | 저점대비:{_pct(l52, multiply=True)}")
+    if c.get("news_text"):
+        lines.append(f"최근공시:\n{c['news_text']}")
+    rag = _fmt_rag_section(c.get("retrieved_patterns", []), label_key=c.get("rag_label_key", "label_20d"))
+    if rag:
+        lines.append(rag)
     return "\n".join(lines)
 
 
@@ -153,10 +175,10 @@ def _fmt_theme(c: dict) -> str:
     if h52 is not None:
         lines.append(f"52주고점대비:{_pct(h52, multiply=True)}")
     if c.get("news_text"):
-        lines.append(f"최근공시: {c['news_text'][:150]}")
-    pr = _pattern_rets(c.get("retrieved_patterns", []))
-    if pr:
-        lines.append(f"유사패턴수익률: {pr}")
+        lines.append(f"최근공시:\n{c['news_text']}")
+    rag = _fmt_rag_section(c.get("retrieved_patterns", []), label_key=c.get("rag_label_key", "label_20d"))
+    if rag:
+        lines.append(rag)
     return "\n".join(lines)
 
 
@@ -176,6 +198,11 @@ def _fmt_dividend(c: dict) -> str:
         f"역사적변동성:{round(float(s.get('hist_vol_20') or 0) * 100, 1)}%",
         f"5일:{_pct(s.get('ret_5d'), multiply=True)} | 20일:{_pct(s.get('ret_20d'), multiply=True)}",
     ]
+    if c.get("news_text"):
+        lines.append(f"최근공시:\n{c['news_text']}")
+    rag = _fmt_rag_section(c.get("retrieved_patterns", []), label_key=c.get("rag_label_key", "label_20d"))
+    if rag:
+        lines.append(rag)
     return "\n".join(lines)
 
 
@@ -203,10 +230,10 @@ def _fmt_crisis(c: dict) -> str:
         f"이자보상:{f.get('interest_coverage', 'N/A')}x"
     )
     if c.get("news_text"):
-        lines.append(f"최근공시: {c['news_text'][:150]}")
-    pr = _pattern_rets(c.get("retrieved_patterns", []))
-    if pr:
-        lines.append(f"유사패턴수익률: {pr}")
+        lines.append(f"최근공시:\n{c['news_text']}")
+    rag = _fmt_rag_section(c.get("retrieved_patterns", []), label_key=c.get("rag_label_key", "label_20d"))
+    if rag:
+        lines.append(rag)
     return "\n".join(lines)
 
 
@@ -230,6 +257,12 @@ def _build_prompt(role_desc: str, guide: str, candidates: list[dict], expert: st
 BUY 종목을 우선하되, HOLD/SELL도 근거가 명확하면 포함하세요.
 각 종목의 pros·cons에는 반드시 구체적인 수치를 포함하세요.
 
+[RAG 활용 지침]
+각 종목의 [유사 과거 패턴 (RAG)] 섹션을 반드시 참고하세요.
+- 적중률이 높고(4/5 이상) 평균수익이 플러스인 종목은 confidence를 높게 설정하세요.
+- 적중률이 낮거나(2/5 이하) 평균수익이 마이너스인 종목은 confidence를 낮추거나 HOLD로 판단하세요.
+- RAG 통계는 펀더멘털 분석을 보완하는 증거로 활용하세요. (RAG만으로 BUY하지 말것)
+
 ## 후보 종목
 
 {blocks}
@@ -247,7 +280,11 @@ _GROWTH_GUIDE = """다음 관점에서 최대 5개 종목을 선택하세요:
 1. 실적 모멘텀 — 매출·영업이익 YoY 성장률이 높은 순
 2. 주가 모멘텀 — RSI 45~70, MACD 양전환, 거래량 동반 상승
 3. 섹터 성장성 — AI·반도체·2차전지·바이오 등 고성장 섹터 우선
-4. 유사 패턴의 과거 5일 수익률"""
+4. RAG 과거 패턴 — 유사 모멘텀 패턴의 적중률·평균수익을 confidence에 반영
+5. 공시 활용:
+   - 유상증자 → 희석 리스크로 confidence 하향
+   - 대규모 수주·계약 체결 → 실적 모멘텀 강화로 BUY 가산점
+   - 전환사채 발행 → 성장 재원 확보 vs 희석 리스크 균형 판단"""
 
 
 def growth_node(state: dict) -> dict:
@@ -266,7 +303,12 @@ _VALUE_GUIDE = """다음 관점에서 최대 5개 종목을 선택하세요:
 1. 밸류에이션 — PBR < 1.5, 섹터 대비 저PER
 2. Graham Number 대비 현재가 위치 (낮을수록 매력적)
 3. 재무 안정성 — 부채비율·이자보상배율
-4. 저평가 해소 촉매 — 배당수익률·FCF"""
+4. 저평가 해소 촉매 — 배당수익률·FCF
+5. RAG 과거 패턴 — 유사 저평가 패턴에서 실제 주가 회복 여부를 confidence에 반영
+6. 공시 활용:
+   - 자기주식 취득 → 저평가 인정 + 주주환원 신호로 BUY 가산점
+   - 전환사채 발행 → BPS·PBR 희석 우려로 confidence 하향
+   - 유상증자 → 자산가치 희석, 저평가 해소 지연 리스크"""
 
 
 def value_node(state: dict) -> dict:
@@ -285,7 +327,11 @@ _THEME_GUIDE = """다음 관점에서 최대 5개 종목을 선택하세요:
 1. 최근 공시·정책 수혜 직접성 (공시 내용 반영)
 2. 거래량 폭발 + 주가 모멘텀 (RSI 70 미만 우선)
 3. 테마 사이클 위치 (초기 진입 우선, 말기 배제)
-4. 유사 급등 이후 과거 수익률 패턴"""
+4. RAG 과거 패턴 — 유사 급등 패턴 이후 실제 수익률 추이를 confidence에 반영
+5. 공시 활용:
+   - 주요사항보고서(수주·계약·MOU) → 테마 직접 수혜 확인으로 BUY 가산점
+   - 조회공시 → 급등 원인 공식 확인, 테마 지속성 판단
+   - 불성실공시 → 신뢰도 하락, confidence 대폭 하향"""
 
 
 def theme_node(state: dict) -> dict:
@@ -304,7 +350,12 @@ _DIVIDEND_GUIDE = """다음 관점에서 최대 5개 종목을 선택하세요:
 1. 배당수익률 + FCF 기반 지속 가능성 (배당성향 30~70% 적정)
 2. 방어적 특성 — 낮은 베타·변동성
 3. 재무 건전성 — 부채비율·이자보상배율
-4. 금리 환경 대비 배당 매력도"""
+4. 금리 환경 대비 배당 매력도
+5. RAG 과거 패턴 — 유사 방어주 패턴의 안정성(손실 최소화)을 confidence에 반영
+6. 공시 활용:
+   - 배당 결정·증액 공시 → 배당 지속성 확인으로 BUY 가산점
+   - 유상증자 → 배당 재원 희석 우려로 confidence 하향
+   - 최대주주 변경 → 배당 정책 변화 가능성, 불확실성으로 HOLD 검토"""
 
 
 def dividend_node(state: dict) -> dict:
@@ -323,7 +374,11 @@ _CRISIS_GUIDE = """다음 관점에서 반등 가능성이 높은 종목을 최�
 1. 급락 원인 분석 — 일시적 악재 vs 구조적 문제 구분
 2. 기술적 과매도 정도 — RSI 30 이하, BB 하단 접근
 3. 재무 건전성 — 이자보상·유동비율 (반등 지속 가능성)
-4. 유사 급락 이후 역사적 회복 패턴"""
+4. RAG 과거 패턴 — 유사 급락 패턴 이후 실제 반등 성공률을 confidence에 반영 (적중률 높을수록 BUY 우선)
+5. 공시 활용:
+   - 횡령·배임·불성실공시 → 구조적 문제로 판단, SELL 또는 confidence 대폭 하향
+   - 조회공시(풍문·보도 해명) → 악재 공식화 여부 확인, 일시적이면 반등 가능
+   - 유상증자(긴급) → 재무 위기 신호, 반등 가능성 낮음으로 HOLD/SELL"""
 
 
 def crisis_node(state: dict) -> dict:
