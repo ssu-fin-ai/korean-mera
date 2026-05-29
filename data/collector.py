@@ -250,11 +250,20 @@ class KoreanStockCollector:
     # ── DART 공시 ────────────────────────────────────────────
 
     def get_recent_filings(self, ticker: str, days: int = 30, ref_date: str = None) -> list[dict]:
-        """주요사항(B)·지분공시(D)·기타(E) 위주로 조회 — 정기보고서(A) 제외"""
+        """주요사항(B)·지분공시(D)·기타(E) 위주로 조회 — 정기보고서(A) 제외. 일별 캐시."""
+        import json
         if self.dart is None:
             return []
-        corp_code = self._ticker_to_dart_code(ticker) or ticker
         ref = datetime.strptime(ref_date, "%Y%m%d") if ref_date else datetime.today()
+        ref_str = ref.strftime("%Y%m%d")
+        cache_path = CACHE_DIR / f"filings_{ticker}_{ref_str}.json"
+        if cache_path.exists():
+            try:
+                return json.loads(cache_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+
+        corp_code = self._ticker_to_dart_code(ticker) or ticker
         start = (ref - timedelta(days=days)).strftime("%Y-%m-%d")
         end = ref.strftime("%Y-%m-%d")
         rows = []
@@ -265,10 +274,17 @@ class KoreanStockCollector:
                     rows.append(df[["rcept_dt", "report_nm", "corp_name"]])
             except Exception as e:
                 logger.debug(f"DART 공시 조회 실패 ({corp_code}, kind={kind}): {e}")
-        if not rows:
-            return []
-        combined = pd.concat(rows).sort_values("rcept_dt", ascending=False)
-        return combined.head(5).to_dict("records")
+
+        result = []
+        if rows:
+            combined = pd.concat(rows).sort_values("rcept_dt", ascending=False)
+            result = combined.head(5).to_dict("records")
+
+        try:
+            cache_path.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
+        return result
 
     def get_financials(self, ticker: str, date: str) -> dict:
         """PER/PBR/배당수익률(pykrx) + 매출/이익(DART) 통합 재무 데이터.
