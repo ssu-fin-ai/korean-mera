@@ -18,6 +18,37 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from config import ROOT
 
+REQUIRED_ENV_VARS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]
+
+
+def check_config():
+    import os
+    from dotenv import load_dotenv
+
+    env_file = Path(__file__).parent / ".env"
+    if not env_file.exists():
+        print(
+            "\n[오류] .env 파일이 없습니다.\n"
+            "아래 명령으로 생성 후 API 키를 입력하세요:\n\n"
+            "  cp .env.example .env\n\n"
+            "필수 항목:\n"
+            "  ANTHROPIC_API_KEY=sk-ant-...\n"
+            "  OPENAI_API_KEY=sk-...\n"
+        )
+        sys.exit(1)
+
+    load_dotenv(env_file)
+
+    missing = [k for k in REQUIRED_ENV_VARS if not os.getenv(k)]
+    if missing:
+        print(
+            f"\n[오류] .env 파일에 필수 항목이 없습니다: {', '.join(missing)}\n"
+            ".env 파일을 열어 아래 항목을 입력하세요:\n\n"
+            + "\n".join(f"  {k}=..." for k in missing)
+            + "\n"
+        )
+        sys.exit(1)
+
 
 def cmd_build_db(args):
     from scheduler.pipeline import MERAPipeline
@@ -115,6 +146,8 @@ def main():
     parser.add_argument("--hold_days", type=int, default=5,
                         help="백테스트 보유 기간 (일)")
     args = parser.parse_args()
+
+    check_config()
 
     logger.add(ROOT / "logs" / "mera_{time}.log",
                rotation="1 day", retention="30 days", level="INFO")

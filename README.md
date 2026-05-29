@@ -132,14 +132,6 @@ poetry install
 
 `poetry.lock`이 있으면 고정된 버전으로 설치되고, 없으면 `pyproject.toml` 범위 내 최신 버전으로 설치됩니다.
 
-### 6. 실행
-
-가상환경 진입 없이 명령 앞에 `poetry run`을 붙여 실행합니다.
-
-```bash
-poetry run py main.py --mode run
-```
-
 ---
 
 ## 환경 변수 설정
@@ -169,50 +161,48 @@ SUPABASE_KEY=...
 
 ---
 
-## 최초 실행 (DB 구축)
+## 실행 방법
 
-ChromaDB에 3년치 과거 패턴을 임베딩하여 저장합니다. **최초 1회만 실행**합니다.
+모든 명령은 `poetry run`을 앞에 붙여 실행합니다.
+
+### 1단계: DB 구축 (최초 1회)
+
+ChromaDB에 3년치 과거 패턴을 임베딩하여 저장합니다.
 
 ```bash
-py main.py --mode build_db --years 3
+poetry run py main.py --mode build_db --years 3
 ```
 
-- 소요 시간: 약 30~60분 (종목 수, 네트워크 속도에 따라 상이)
+- 소요 시간: 약 30~60분
 - 결과물: `chroma_db/` 디렉토리에 5,900건+ 패턴 저장
 - 비용: OpenAI 임베딩 기준 약 $0.03
 
----
-
-## 일별 실행
-
-### 기본 실행 (오늘 날짜)
+### 2단계: 일별 실행
 
 ```bash
-py main.py --mode run
-```
+# 오늘 날짜 분석
+poetry run py main.py --mode run
 
-### 특정 날짜 분석
-
-```bash
-py main.py --mode run --date 20260515
-```
-
-### 스케줄러 실행 (매일 16:30 자동화)
-
-```bash
-py main.py --mode schedule
+# 특정 날짜 분석
+poetry run py main.py --mode run --date 20260515
 ```
 
 ### 포트폴리오 평가
 
 ```bash
-py main.py --mode evaluate --date 20260523
+poetry run py main.py --mode evaluate --date 20260523
 ```
 
-### 백테스트 (ARR·MDD·Sortino·Calmar 차트)
+### 백테스트 (ARR·MDD·Sortino·Calmar)
 
 ```bash
-py main.py --mode backtest
+poetry run py main.py --mode backtest
+```
+
+### 스케줄러 (매일 16:30 자동화)
+
+```bash
+poetry run py main.py --mode schedule
 ```
 
 ### 출력 파일
