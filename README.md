@@ -301,7 +301,7 @@ py upload_backtest_2025.py
 ### 실행
 
 ```bash
-streamlit run app.py
+poetry run streamlit run app.py
 ```
 
 브라우저에서 `http://localhost:8501` 접속
