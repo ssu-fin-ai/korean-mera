@@ -1,0 +1,49 @@
+[tool.poetry]
+name = "korean-mera"
+version = "0.1.0"
+description = "MERA 기반 한국주식 AI 에이전트 시스템"
+authors = ["jangil <jangil.oh@gmail.com>"]
+readme = "README.md"
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.13"
+
+# Data Collection
+pykrx = ">=1.0.45"
+finance-datareader = ">=0.9.0"
+OpenDartReader = ">=0.2.0"
+
+# Feature Engineering
+pandas = ">=2.0.0"
+numpy = ">=1.24.0"
+pandas-ta = { version = ">=0.3.14b0", allow-prereleases = true }
+scikit-learn = ">=1.3.0"
+
+# Vector Store
+chromadb = ">=0.5.0"
+
+# LLM API
+anthropic = ">=0.40.0"
+openai = ">=1.50.0"
+
+# LangGraph
+langgraph = ">=0.2.0"
+
+# Dashboard
+streamlit = ">=1.30.0"
+
+# Scheduling & Utils
+schedule = ">=1.2.0"
+python-dotenv = ">=1.0.0"
+pyyaml = ">=6.0.0"
+tqdm = ">=4.66.0"
+loguru = ">=0.7.0"
+
+# Evaluation & Visualization
+matplotlib = ">=3.8.0"
+seaborn = ">=0.13.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

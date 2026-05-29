@@ -15,6 +15,10 @@ venv/
 .venv/
 env/
 
+# Poetry (가상환경은 .venv/로 관리, poetry.lock은 커밋 대상)
+dist/
+*.egg-info/
+
 # IDE
 .vscode/
 .idea/
