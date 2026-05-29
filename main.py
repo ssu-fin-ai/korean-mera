@@ -40,6 +40,28 @@ def cmd_schedule(_args):
     start_scheduler()
 
 
+def cmd_evaluate(args):
+    from scheduler.pipeline import MERAPipeline
+    from portfolio.evaluator import run_evaluation
+
+    pipeline = MERAPipeline()
+    date = args.date or __import__("datetime").datetime.today().strftime("%Y%m%d")
+    today_dash = f"{date[:4]}-{date[4:6]}-{date[6:]}"
+
+    prev_date = pipeline._get_weekly_portfolio_date(today_dash)
+    if not prev_date:
+        logger.error("평가할 포트폴리오가 DB에 없습니다. 먼저 --mode run 실행 필요")
+        return
+
+    result = run_evaluation(prev_date, today_dash, pipeline.collector)
+    if result:
+        print(f"\n=== 포트폴리오 평가 결과 [{prev_date} → {today_dash}] ===")
+        print(f"종목수: {result['stock_count']} | 평균수익: {result['avg_return']:+.1%} | 적중률: {result['hit_rate']:.0%}")
+        print(f"\n[LLM 종합 평가]\n{result['summary']}")
+    else:
+        print("평가 결과 없음 (이미 평가됨 or 데이터 부족)")
+
+
 def cmd_backtest(args):
     from evaluation.backtest import (
         load_portfolios, compute_returns, compute_metrics, plot_results
@@ -76,6 +98,7 @@ def cmd_backtest(args):
 COMMANDS = {
     "build_db": cmd_build_db,
     "run": cmd_run,
+    "evaluate": cmd_evaluate,
     "schedule": cmd_schedule,
     "backtest": cmd_backtest,
 }

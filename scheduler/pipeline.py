@@ -1,8 +1,10 @@
 """메인 파이프라인: 데이터 수집 → 임베딩 → 신호 생성 → 리포트"""
 
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import pandas as pd
 from loguru import logger
 
 from config import ROOT, SETTINGS
@@ -11,9 +13,8 @@ from data.feature_engineer import FeatureEngineer
 from data.text_generator import generate_news_text, generate_pattern_text
 from vector_store.embedder import embed_single, embed_texts
 from vector_store.store import NewsStore, PatternStore
-from agents.gate_agent import route
-from agents.experts import run_experts
-from portfolio.aggregator import StockSignal, aggregate, build_portfolio, build_report
+from db.supabase_store import PortfolioStore
+from portfolio.aggregator import portfolio_to_df
 
 REPORTS_DIR = ROOT / "reports"
 REPORTS_DIR.mkdir(exist_ok=True)
@@ -25,6 +26,7 @@ class MERAPipeline:
         self.engineer = FeatureEngineer(window=SETTINGS["data"]["feature_window"])
         self.pattern_store = PatternStore()
         self.news_store = NewsStore()
+        self.portfolio_store = PortfolioStore()
 
     # ── Phase 1: 히스토리 DB 구축 (최초 1회) ────────────────────────────────
 
@@ -37,9 +39,7 @@ class MERAPipeline:
         tickers = self.collector.get_universe()
         logger.info(f"히스토리 DB 구축 시작: {len(tickers)}종목, {years}년치")
 
-        # 지수 데이터 (상대강도 계산용)
         kospi_df = self.collector.get_index_ohlcv("1001", start, end)
-
         sector_map = self.collector.get_sector_map()
 
         for i, ticker in enumerate(tickers):
@@ -54,9 +54,8 @@ class MERAPipeline:
                 name = sector_map.loc[ticker, "name"] if ticker in sector_map.index else ticker
                 market = sector_map.loc[ticker, "market"] if ticker in sector_map.index else "KOSPI"
 
-                # 매월 말 날짜만 샘플링 (DB 크기 절약)
                 sample_dates = df.resample("ME").last().index
-                sample_dates = [d.strftime("%Y-%m-%d") for d in sample_dates if not d.isna()]
+                sample_dates = [d.strftime("%Y-%m-%d") for d in sample_dates if not pd.isna(d)]
 
                 ids, texts, embeddings, metas = [], [], [], []
 
@@ -97,107 +96,94 @@ class MERAPipeline:
 
         logger.info(f"히스토리 DB 구축 완료: {self.pattern_store.count()}건")
 
-    # ── Phase 2: 일별 신호 생성 ──────────────────────────────────────────────
+    # ── Phase 2: 일별 신호 생성 (LangGraph) ─────────────────────────────────
 
     def run_daily(self, date: str = None) -> str:
-        """오늘 날짜 기준 전 종목 분석 → 포트폴리오 리포트 반환"""
+        """LangGraph MERA 그래프 실행 → 포트폴리오 리포트 반환"""
         today = date or datetime.today().strftime("%Y%m%d")
         today_dash = f"{today[:4]}-{today[4:6]}-{today[6:]}"
-        start = (datetime.strptime(today, "%Y%m%d") - timedelta(days=200)).strftime("%Y%m%d")
 
-        tickers = self.collector.get_universe()
-        kospi_df = self.collector.get_index_ohlcv("1001", start, today)
-        sector_map = self.collector.get_sector_map()
+        # 이전 포트폴리오 수익률 평가
+        self._evaluate_prev_portfolio(today_dash)
 
-        cfg = SETTINGS["portfolio"]
-        all_signals: list[StockSignal] = []
+        # LangGraph 그래프 실행
+        from agents.graph import build_mera_graph
+        graph = build_mera_graph()
 
-        logger.info(f"일별 분석 시작: {today_dash} | {len(tickers)}종목")
+        logger.info(f"LangGraph MERA 실행: {today_dash}")
+        final_state = graph.invoke({"date": today})
 
-        for i, ticker in enumerate(tickers):
-            try:
-                signal = self._analyze_one(
-                    ticker, today, today_dash, start, kospi_df, sector_map
-                )
-                if signal:
-                    all_signals.append(signal)
-            except Exception as e:
-                logger.warning(f"{ticker} 분석 실패: {e}")
+        report: str = final_state.get("report", f"[{today_dash}] 리포트 생성 실패")
+        portfolio: list[dict] = final_state.get("final_portfolio", [])
 
-            if (i + 1) % 50 == 0:
-                logger.info(f"  {i+1}/{len(tickers)} 분석 완료")
+        # 포트폴리오 DB 저장 (다음날 평가에 사용)
+        if portfolio:
+            df = portfolio_to_df(portfolio, today_dash)
+            self.portfolio_store.save(today_dash, df)
 
-        portfolio = build_portfolio(
-            all_signals,
-            top_n=cfg["top_n"],
-            min_confidence=cfg["signal_threshold"],
-        )
-        report = build_report(portfolio, today_dash)
-
-        # 리포트 저장
+        # 리포트 텍스트 저장
         report_path = REPORTS_DIR / f"report_{today}.txt"
         report_path.write_text(report, encoding="utf-8")
-        portfolio.to_csv(REPORTS_DIR / f"portfolio_{today}.csv",
-                         index=True, encoding="utf-8-sig")
+
+        # 포트폴리오 JSON 저장
+        if portfolio:
+            json_path = REPORTS_DIR / f"portfolio_{today}.json"
+            json_path.write_text(
+                json.dumps(portfolio, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
 
         logger.info(f"리포트 저장: {report_path}")
         return report
 
-    def _analyze_one(self, ticker, today, today_dash, start, kospi_df, sector_map) -> StockSignal | None:
-        df = self.collector.get_ohlcv(ticker, start, today)
-        if df.empty or len(df) < 60:
+    # ── Phase 2.5: 이전 포트폴리오 평가 ─────────────────────────────────────
+
+    def _get_weekly_portfolio_date(self, today_dash: str) -> str | None:
+        """5영업일(1주) 전 포트폴리오 날짜 반환"""
+        try:
+            today_dt = pd.to_datetime(today_dash)
+            target_dt = today_dt - pd.tseries.offsets.BDay(5)
+
+            dates = self.portfolio_store.list_dates()
+            candidates = [d for d in dates if d < today_dash]
+            if not candidates:
+                return None
+
+            def _dist(d):
+                return abs((pd.to_datetime(d) - target_dt).days)
+
+            closest = min(candidates, key=_dist)
+            if _dist(closest) > 10:
+                return None
+            return closest
+        except Exception as e:
+            logger.debug(f"주간 포트폴리오 날짜 조회 실패: {e}")
             return None
 
-        df = self.engineer.compute(df)
-        df = self.engineer.add_relative_strength(df, kospi_df)
-
-        snap = self.engineer.get_snapshot_vector(df, today_dash)
-        if snap is None:
-            return None
-
-        name = sector_map.loc[ticker, "name"] if ticker in sector_map.index else ticker
-        market = sector_map.loc[ticker, "market"] if ticker in sector_map.index else "KOSPI"
-        sector = self.collector.get_sector_name(ticker, today)
-
-        current_text = generate_pattern_text(
-            ticker=ticker, name=name, sector=sector, market=market, snapshot=snap
-        )
-
-        # 벡터 DB에서 유사 패턴 검색
-        current_emb = embed_single(current_text)
-        retrieved = self.pattern_store.query(
-            current_emb,
-            top_k=SETTINGS["retrieval"]["top_k"],
-        )
-
-        # GateNet 라우팅
-        gate_result = route(current_text, retrieved)
-        expert_names = gate_result.get("experts", ["growth"])
-
-        # 뉴스 컨텍스트 (DART)
-        news_text = ""
-        filings = self.collector.get_recent_filings(ticker, days=30)
-        if filings:
-            news_text = generate_news_text(ticker, name, filings)
-
-        # 전문가 에이전트 실행
-        expert_results = run_experts(
-            expert_names, current_text, retrieved, news_text
-        )
-
-        stock_signal = StockSignal(
-            ticker=ticker, name=name, sector=sector, date=today_dash,
-            gate_result=gate_result, expert_results=expert_results,
-        )
-        return aggregate(stock_signal)
+    def _evaluate_prev_portfolio(self, today_dash: str) -> None:
+        """지난 주 포트폴리오 수익률 평가 후 EvaluationStore에 저장 (5영업일 기준)"""
+        prev_date = self._get_weekly_portfolio_date(today_dash)
+        if not prev_date:
+            return
+        try:
+            from portfolio.evaluator import run_evaluation
+            result = run_evaluation(prev_date, today_dash, self.collector)
+            if result:
+                logger.info(
+                    f"주간 포트폴리오 평가 완료 ({prev_date} → {today_dash}): "
+                    f"평균수익 {result['avg_return']:+.1%} | "
+                    f"적중률 {result['hit_rate']:.0%}"
+                )
+        except Exception as e:
+            logger.warning(f"포트폴리오 평가 실패 ({prev_date}): {e}")
 
     # ── Phase 3: 데이터 업데이트 (오늘치 추가) ───────────────────────────────
 
     def update_today(self, today: str = None):
-        """오늘 날짜 패턴을 DB에 추가"""
+        """오늘 날짜 패턴을 ChromaDB에 추가"""
         today = today or datetime.today().strftime("%Y%m%d")
         today_dash = f"{today[:4]}-{today[4:6]}-{today[6:]}"
-        start = (datetime.strptime(today, "%Y%m%d") - timedelta(days=200)).strftime("%Y%m%d")
+        start = (datetime.strptime(today, "%Y%m%d") - timedelta(days=380)).strftime("%Y%m%d")
 
         tickers = self.collector.get_universe()
         kospi_df = self.collector.get_index_ohlcv("1001", start, today)

@@ -18,7 +18,8 @@ class FeatureEngineer:
         df = self._add_momentum(df)
         df = self._add_volatility(df)
         df = self._add_volume(df)
-        return df.dropna()
+        feature_cols = [c for c in df.columns if not c.startswith("label_")]
+        return df.dropna(subset=feature_cols)
 
     # ── 수익률 ────────────────────────────────────────────────
 
@@ -44,9 +45,10 @@ class FeatureEngineer:
 
         macd = ta.macd(df["close"])
         if macd is not None and not macd.empty:
-            df["macd"] = macd.iloc[:, 0]
-            df["macd_signal"] = macd.iloc[:, 1]
-            df["macd_diff"] = macd.iloc[:, 2]
+            # pandas_ta 컬럼 순서: MACD_12_26_9, MACDh_12_26_9, MACDs_12_26_9
+            df["macd"] = macd.iloc[:, 0]          # MACD 선 (EMA12 - EMA26)
+            df["macd_signal"] = macd.iloc[:, 2]   # 시그널 선 (EMA9 of MACD)
+            df["macd_diff"] = df["macd"] - df["macd_signal"]  # 히스토그램 (양수=골든크로스)
 
         adx = ta.adx(df["high"], df["low"], df["close"])
         if adx is not None and not adx.empty:
@@ -101,6 +103,28 @@ class FeatureEngineer:
 
     # ── 상대 강도 (시장/섹터 대비) ────────────────────────────
 
+    def get_52w_position(self, df: pd.DataFrame, date: str) -> dict:
+        """52주 고점/저점 대비 현재가 위치 + 현재가"""
+        available = df.index.strftime("%Y-%m-%d")
+        valid = available[available <= date]
+        if valid.empty:
+            return {}
+        actual_date = valid[-1]
+        row = df[df.index.strftime("%Y-%m-%d") == actual_date].iloc[-1]
+        close = float(row.get("close", 0))
+        if close <= 0:
+            return {}
+        window_52w = df[df.index.strftime("%Y-%m-%d") <= actual_date].tail(252)
+        result = {"current_price": int(close)}
+        if not window_52w.empty:
+            high_52w = float(window_52w["high"].max())
+            low_52w  = float(window_52w["low"].min())
+            if high_52w > 0:
+                result["pct_from_52w_high"] = round(close / high_52w - 1, 4)
+            if low_52w > 0:
+                result["pct_from_52w_low"]  = round(close / low_52w  - 1, 4)
+        return result
+
     def add_relative_strength(self, df: pd.DataFrame,
                                market_df: pd.DataFrame) -> pd.DataFrame:
         """KOSPI 대비 상대수익률 추가"""
@@ -116,12 +140,15 @@ class FeatureEngineer:
     # ── 스냅샷 (패턴 벡터) ───────────────────────────────────
 
     def get_snapshot_vector(self, df: pd.DataFrame, date: str) -> dict | None:
-        """특정 날짜 기준 패턴 수치 벡터 반환"""
-        if date not in df.index.strftime("%Y-%m-%d").tolist():
+        """특정 날짜 기준 패턴 수치 벡터 반환 (당일 없으면 가장 가까운 이전 거래일 사용)"""
+        available = df.index.strftime("%Y-%m-%d")
+        valid = available[available <= date]
+        if valid.empty:
             return None
+        actual_date = valid[-1]
 
-        row = df[df.index.strftime("%Y-%m-%d") == date].iloc[-1]
-        window_data = df[df.index.strftime("%Y-%m-%d") <= date].tail(self.window)
+        row = df[df.index.strftime("%Y-%m-%d") == actual_date].iloc[-1]
+        window_data = df[df.index.strftime("%Y-%m-%d") <= actual_date].tail(self.window)
 
         return {
             # 수익률 시계열 (정규화)

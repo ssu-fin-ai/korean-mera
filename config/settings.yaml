@@ -1,14 +1,14 @@
 llm:
-  provider: "anthropic"           # anthropic | openai
+  provider: "anthropic"           # google | anthropic
   model: "claude-sonnet-4-6"
-  embedding_model: "text-embedding-3-small"  # openai embedding
+  embedding_model: "text-embedding-3-small"  # OpenAI 임베딩 (1536차원)
   temperature: 0.1
-  max_tokens: 2048
+  max_tokens: 8192
 
 data:
   universe:
     kospi200: true
-    kosdaq150: true
+    kosdaq150: false
   history_years: 5
   feature_window: 20              # 패턴 생성 시 참조 일수
   update_time: "16:30"            # 장 마감 후 수집 시각
@@ -28,9 +28,13 @@ agents:
     - crisis                      # 위기/급락
 
 portfolio:
-  top_n: 20                       # 최종 포트폴리오 종목 수
+  top_n: 5                        # 최종 포트폴리오 종목 수 (전문가당 5종목과 동일 기준)
   rebalance_freq: "weekly"        # daily | weekly
   signal_threshold: 0.60          # BUY 신뢰도 최소값
+
+pipeline:
+  workers: 10                       # 병렬 종목 분석 스레드 수
+  api_concurrency: 5                # Claude API 동시 호출 수 (RPM 제한 고려)
 
 paths:
   data_cache: "./cache"
