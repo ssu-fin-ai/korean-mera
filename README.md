@@ -110,17 +110,18 @@ curl -sSL https://install.python-poetry.org | python3 -
 (Invoke-WebRequest -Uri https://install.python-poetry.org -UseBasicParsing).Content | python -
 ```
 
-Poetry가 프로젝트 디렉토리 안에 `.venv`를 생성하도록 설정합니다.
-
-```bash
-poetry config virtualenvs.in-project true
-```
-
 ### 4. 저장소 클론
 
 ```bash
 git clone https://github.com/ssu-fin-ai/korean-mera.git
 cd korean-mera
+```
+
+Python 버전을 고정하고 Poetry 가상환경을 프로젝트 내부에 생성하도록 설정합니다.
+
+```bash
+pyenv local 3.13.0
+poetry config virtualenvs.in-project true
 ```
 
 ### 5. 의존성 설치
@@ -131,13 +132,9 @@ poetry install
 
 `poetry.lock`이 있으면 고정된 버전으로 설치되고, 없으면 `pyproject.toml` 범위 내 최신 버전으로 설치됩니다.
 
-### 6. 가상환경 진입
+### 6. 실행
 
-```bash
-poetry shell
-```
-
-또는 매 명령 앞에 `poetry run`을 붙여 실행할 수 있습니다.
+가상환경 진입 없이 명령 앞에 `poetry run`을 붙여 실행합니다.
 
 ```bash
 poetry run py main.py --mode run
