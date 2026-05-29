@@ -12,7 +12,7 @@ from data.collector import KoreanStockCollector
 from data.feature_engineer import FeatureEngineer
 from data.text_generator import generate_news_text, generate_pattern_text
 from vector_store.embedder import embed_single, embed_texts
-from vector_store.store import NewsStore, PatternStore
+from vector_store.store import PatternStore
 from db.supabase_store import PortfolioStore
 from portfolio.aggregator import portfolio_to_df
 
@@ -25,7 +25,6 @@ class MERAPipeline:
         self.collector = KoreanStockCollector()
         self.engineer = FeatureEngineer(window=SETTINGS["data"]["feature_window"])
         self.pattern_store = PatternStore()
-        self.news_store = NewsStore()
         self.portfolio_store = PortfolioStore()
 
     # ── Phase 1: 히스토리 DB 구축 (최초 1회) ────────────────────────────────
