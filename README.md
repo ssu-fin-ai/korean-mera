@@ -18,14 +18,10 @@ GPU 없이 외부 LLM API만으로 구현한 한국주식 포트폴리오 분석
 1. [사전 요구사항](#사전-요구사항)
 2. [설치](#설치)
 3. [환경 변수 설정](#환경-변수-설정)
-4. [최초 실행 (DB 구축)](#최초-실행-db-구축)
-5. [일별 실행](#일별-실행)
-6. [백테스트](#백테스트)
-7. [대시보드](#대시보드)
-8. [유틸리티 스크립트](#유틸리티-스크립트)
-9. [테스트](#테스트)
-10. [아키텍처](#아키텍처)
-11. [프로젝트 구조](#프로젝트-구조)
+4. [실행 방법](#실행-방법)
+5. [테스트](#테스트)
+6. [아키텍처](#아키텍처)
+7. [프로젝트 구조](#프로젝트-구조)
 
 ---
 
@@ -166,9 +162,7 @@ SUPABASE_KEY=...
 
 ## 실행 방법
 
-모든 명령은 `poetry run`을 앞에 붙여 실행합니다.
-
-### 1단계: DB 구축 (최초 1회)
+### 1. DB 구축 (최초 1회)
 
 ChromaDB에 3년치 과거 패턴을 임베딩하여 저장합니다.
 
@@ -180,76 +174,22 @@ poetry run py main.py --mode build_db --years 3
 - 결과물: `chroma_db/` 디렉토리에 약 150,000건 패턴 저장
 - 비용: OpenAI 임베딩 기준 약 $0.36
 
-### 2단계: 일별 실행
+### 2. 백테스트
 
-```bash
-# 오늘 날짜 분석 (기본: 월별 분석, 20일 RAG)
-poetry run py main.py --mode run
-
-# 특정 날짜 분석
-poetry run py main.py --mode run --date 20260515
-
-# 주간 분석 (5일 RAG 기준)
-poetry run py main.py --mode run --date 20260515 --horizon weekly
-
-# 월별 분석 (20일 RAG 기준, 기본값)
-poetry run py main.py --mode run --date 20260515 --horizon monthly
-```
-
-| `--horizon` | RAG 수익률 기준 | 적합한 용도 |
-|-------------|----------------|------------|
-| `weekly` | 5일 후 수익률 | 단기 모멘텀·테마 분석 |
-| `monthly` | 20일 후 수익률 (기본값) | 중장기 가치·배당 분석 |
-
-### 포트폴리오 평가
-
-```bash
-poetry run py main.py --mode evaluate --date 20260523
-```
-
-### 백테스트 (ARR·MDD·Sortino·Calmar)
-
-```bash
-poetry run py main.py --mode backtest
-```
-
-### 스케줄러 (매일 16:30 자동화)
-
-```bash
-poetry run py main.py --mode schedule
-```
-
-### 출력 파일
-
-```
-reports/
-  report_20260515.txt        # 포트폴리오 리포트 (텍스트)
-  portfolio_20260515.csv     # 포트폴리오 데이터 (CSV)
-
-cache/
-  {ticker}_{start}_{end}.parquet  # OHLCV 캐시
-  fin_{ticker}_{YYYYMM}.json      # 재무 지표 캐시 (월별)
-  sector_map.parquet              # 섹터 정보 캐시 (주별)
-```
-
----
-
-## 백테스트
-
-### 2026년 백테스트
+#### 2026년
 
 ```bash
 # 월별 + 주별 (기본값)
-py backtest_2026.py
+poetry run py backtest_2026.py
 
 # 월별만 (5회)
-py backtest_2026.py --freq monthly
+poetry run py backtest_2026.py --freq monthly
 
 # 주별만 (~20회)
-py backtest_2026.py --freq weekly
+poetry run py backtest_2026.py --freq weekly
 
 # OHLCV 캐시 단계 건너뜀 (이미 캐시된 경우)
-py backtest_2026.py --freq monthly --no-precache
+poetry run py backtest_2026.py --freq monthly --no-precache
 ```
 
 결과물은 `reports/backtest_2026/` 에 날짜별 디렉토리로 저장됩니다.
@@ -270,35 +210,31 @@ reports/backtest_2026/
   run_log.txt
 ```
 
-### 2025년 백테스트
+#### 2025년
 
 ```bash
 # 월별 + 주별 (기본값)
-py backtest_2025.py
+poetry run py backtest_2025.py
 
 # 월별만
-py backtest_2025.py --freq monthly
+poetry run py backtest_2025.py --freq monthly
 
 # 주별만
-py backtest_2025.py --freq weekly
+poetry run py backtest_2025.py --freq weekly
 ```
 
 결과물은 `reports/backtest_2025/` 에 동일한 구조로 저장됩니다.
 
-### Supabase 업로드 (선택)
+#### Supabase 업로드 (선택)
 
 백테스트 결과를 Supabase DB에 업로드합니다. SUPABASE_URL, SUPABASE_KEY 설정이 필요합니다.
 
 ```bash
-py upload_backtest_2026.py
-py upload_backtest_2025.py
+poetry run py upload_backtest_2026.py
+poetry run py upload_backtest_2025.py
 ```
 
----
-
-## 대시보드
-
-### 실행
+### 3. 대시보드
 
 ```bash
 poetry run streamlit run app.py
@@ -306,7 +242,7 @@ poetry run streamlit run app.py
 
 브라우저에서 `http://localhost:8501` 접속
 
-### 백그라운드 실행 (Linux)
+#### 백그라운드 실행 (Linux)
 
 ```bash
 # 시작
@@ -319,7 +255,7 @@ bash stop.sh
 tail -f streamlit.log
 ```
 
-### 페이지 구성
+#### 페이지 구성
 
 | 페이지 | 내용 |
 |--------|------|
@@ -329,31 +265,19 @@ tail -f streamlit.log
 
 ---
 
-## 유틸리티 스크립트
-
-### 어그리게이터 재실행
-
-포트폴리오 선정 단계는 건너뛰고 집계(aggregator) 단계만 다시 실행합니다.
-
-```bash
-py rerun_aggregator.py --date 20260515
-```
-
----
-
 ## 테스트
 
 ### 연결 확인 (권장: 최초 설정 후 실행)
 
 ```bash
 # API 키 및 데이터 수집 전체 흐름 확인
-py test_smoke.py
+poetry run py test_smoke.py
 
 # Claude LLM 연결 및 JSON 파싱 확인
-py test_llm_parse.py
+poetry run py test_llm_parse.py
 
 # JSON 파싱 엣지케이스 확인
-py test_json_parse.py
+poetry run py test_json_parse.py
 ```
 
 ---
@@ -365,15 +289,17 @@ py test_json_parse.py
       ↓
 [피처 엔지니어링] 기술적 지표 (RSI, MACD, BB, ADX 등) + 재무 지표 (PER, PBR 등)
       ↓
-[임베딩] OpenAI text-embedding-3-small → 패턴 텍스트 벡터화 (1,536차원)
+[임베딩] OpenAI text-embedding-3-small → 패턴 텍스트 벡터화 (1,536차원) → ChromaDB 저장
       ↓
-[ChromaDB] 유사 과거 패턴 검색 (top-k=5, 코사인 유사도)
+[Screener] 종목 필터링 (유니버스 → 후보군)
       ↓
-[GateNet] Claude → 전문가 에이전트 라우팅
+[GateNet] Claude → 전문가 에이전트 라우팅 가중치 결정
       ↓
-[Expert Agents] Claude × 5종 (성장/가치/테마/배당/위기)
+[Expert Agents] Claude × 5종 병렬 (성장/가치/테마/배당/위기) + ChromaDB RAG (top-k=5)
       ↓
-[Aggregator] 신호 통합 → 포트폴리오 (TOP 20, 신뢰도 ≥ 0.60)
+[Aggregator] 신호 통합 → 포트폴리오 (TOP 5, 신뢰도 ≥ 0.60)
+      ↓
+[Reporter] 리포트 생성 + 포트폴리오 저장
       ↓
 [Evaluator] 실제 수익률 평가 + ARR/MDD/Sortino/Calmar 리스크 지표 산출
 ```
