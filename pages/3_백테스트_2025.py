@@ -205,9 +205,10 @@ if section == "📊 연간 성과 요약":
     if not df_sum.empty and "expert_key" in df_sum.columns:
         pivot = (
             df_sum[df_sum["expert_key"].isin(EXPERTS)]
-            .pivot(index="월", columns="전문가", values="평균수익")
-            .reindex([_month_label(p) for p, _ in MONTHLY_SCHEDULE])
+            .pivot(index="port_date", columns="전문가", values="평균수익")
+            .reindex([p for p, _ in MONTHLY_SCHEDULE])
         )
+        pivot.index = [f"{int(p[4:6]):02d}월" for p in pivot.index]
         st.bar_chart(pivot, height=300)
     else:
         st.info("평가 데이터가 없습니다.")

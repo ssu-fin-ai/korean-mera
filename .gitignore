@@ -30,3 +30,6 @@ Thumbs.db
 
 # OMC
 .omc/
+
+# 보고서 (로컬 전용)
+docs/report/
