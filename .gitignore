@@ -31,5 +31,8 @@ Thumbs.db
 # OMC
 .omc/
 
+# ChromaDB (로컬 벡터 DB — 용량 초과)
+chroma_db/
+
 # 보고서 (로컬 전용)
 docs/report/
