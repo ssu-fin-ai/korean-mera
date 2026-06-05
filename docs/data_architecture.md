@@ -284,6 +284,11 @@ stock_patterns       ├─ snapshot (기술지표)
              [5개 전문가 병렬 실행]
              growth / value / theme / dividend / crisis
              (snapshot + financials + 공시 + RAG → Claude LLM)
+             각 전문가: 최대 5개 종목 선택 → 전문가별 picks (최대 25개)
                      ↓
-             aggregator (GateNet 가중치 반영) → 포트폴리오 (TOP-5, confidence ≥ 0.60)
+             aggregator (GateNet 가중치 반영)
+             ├─ 전문가별 picks 통합 (최대 25개, 티커 기준 중복 허용)
+             ├─ confidence ≥ 0.60 필터
+             ├─ composite_score 산출 후 내림차순 정렬
+             └─ TOP-5 최종 포트폴리오 (settings: portfolio.top_n=5)
 ```
