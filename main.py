@@ -54,7 +54,7 @@ def check_config():
 
 def cmd_build_db(args):
     from scheduler.pipeline import MERAPipeline
-    years = int(args.years) if hasattr(args, "years") and args.years else 5
+    years = args.years  # None이면 pipeline이 settings.yaml의 history_years 사용
     logger.info(f"히스토리 DB 구축 시작 ({years}년)")
     pipeline = MERAPipeline()
     pipeline.build_history_db(years=years)
@@ -144,8 +144,8 @@ def main():
                         default="run", help="실행 모드")
     parser.add_argument("--date", type=str, default=None,
                         help="분석 날짜 (YYYYMMDD, 기본값: 오늘)")
-    parser.add_argument("--years", type=int, default=5,
-                        help="히스토리 DB 구축 기간 (년)")
+    parser.add_argument("--years", type=int, default=None,
+                        help="히스토리 DB 구축 기간 (년, 기본값: settings.yaml history_years)")
     parser.add_argument("--horizon", choices=["weekly", "monthly"], default="monthly",
                         help="분석 기간 (weekly=5일 RAG, monthly=20일 RAG)")
     parser.add_argument("--hold_days", type=int, default=5,

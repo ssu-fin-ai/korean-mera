@@ -9,7 +9,7 @@
 
 | 심각도 | 건수 | 내용 |
 |--------|------|------|
-| 🔴 버그 | 1 | MACD 컬럼 인덱스 오류 — signal/histogram 뒤바뀜 |
+| 🟢 수정완료 | 1 | MACD 컬럼 인덱스 오류 — `feature_engineer.py` 에서 수정됨 |
 | 🟡 비표준 | 2 | BBands 기간 5일(표준 20일), 상대강도 계산 방식 불일치 |
 | 🟢 정상 | 나머지 | 수익률·모멘텀·변동성·재무비율·백테스트 성과지표 모두 적절 |
 
@@ -55,34 +55,24 @@ close_to_ma{w} = close / ma{w} - 1
 - 5/20/60/120일 단순이동평균 ✅
 - `close_to_ma{w}`: 이동평균 대비 현재가 괴리율(소수), 양수 = 이평선 위 ✅
 
-### MACD 🔴 버그
+### MACD 🟢 수정완료
 
-**실제 pandas_ta 컬럼 순서:**
+**pandas_ta 컬럼 순서:**
 ```
 iloc[:,0] = MACD_12_26_9   → MACD 선 (EMA12 - EMA26)
 iloc[:,1] = MACDh_12_26_9  → 히스토그램 (MACD 선 - Signal)
 iloc[:,2] = MACDs_12_26_9  → 시그널 선 (EMA9 of MACD)
 ```
 
-**현재 코드 매핑:**
+**현재 코드 (`feature_engineer.py` 49~51):**
 ```python
 df["macd"]        = macd.iloc[:, 0]   # ✅ MACD 선
-df["macd_signal"] = macd.iloc[:, 1]   # ❌ 실제로는 히스토그램
-df["macd_diff"]   = macd.iloc[:, 2]   # ❌ 실제로는 시그널 선
+df["macd_signal"] = macd.iloc[:, 2]   # ✅ 시그널 선 (EMA9)
+df["macd_diff"]   = df["macd"] - df["macd_signal"]  # ✅ 명시적 계산
 ```
 
-**영향:**
-- `macd_diff > 0` 체크 = "시그널 선 > 0" (의도: "히스토그램 > 0" = MACD가 시그널 위)
-- 전문가 에이전트의 `'+양전환' if macd_diff > 0` 판단이 엄밀하지 않음
-- 히스토그램 기반 크로스오버 감지 불가
-
-**수정 방법:**
-```python
-df["macd"]        = macd.iloc[:, 0]   # MACD_12_26_9
-df["macd_hist"]   = macd.iloc[:, 1]   # MACDh_12_26_9 (히스토그램)
-df["macd_signal"] = macd.iloc[:, 2]   # MACDs_12_26_9 (시그널)
-df["macd_diff"]   = df["macd"] - df["macd_signal"]  # 명시적 계산
-```
+- `macd_diff > 0` = MACD 선이 시그널 선 위 = 골든크로스 ✅
+- 히스토그램(`iloc[:,1]`)은 저장하지 않음 — 필요 시 `macd_diff`로 대체 가능
 
 ### ADX
 
@@ -403,11 +393,11 @@ composite = avg_confidence × avg_score + expert_count × 0.5
 
 | 우선순위 | 파일 | 라인 | 수정 내용 |
 |----------|------|------|-----------|
-| 🔴 1 | `feature_engineer.py` | 48~50 | `macd_signal`↔`macd_hist` 이름 수정, `macd_diff` 명시 계산 |
-| 🟡 2 | `feature_engineer.py` | 75 | `ta.bbands(close, length=20)` 명시 |
-| 🟡 3 | `feature_engineer.py` | 131~132 | `rel_strength` 계산 방식 통일 (`pct_change` 기준) |
-| 🟢 4 | `feature_engineer.py` | 133~136 | 베타 윈도우 20 → 60일 고려 |
-| 🟢 5 | `evaluation/backtest.py` | 125 | rf 파라미터 추가 (기본값 0 유지) |
+| 🟢 완료 | `feature_engineer.py` | 49~51 | `macd_signal`·`macd_diff` 명시 계산 — 수정됨 |
+| 🟡 1 | `feature_engineer.py` | 76 | `ta.bbands(close, length=20)` 명시 (현재 기본값 5일) |
+| 🟡 2 | `feature_engineer.py` | 132~133 | `rel_strength` 계산 방식 통일 (`pct_change` 기준) |
+| 🟢 3 | `feature_engineer.py` | 134~137 | 베타 윈도우 20 → 60일 고려 |
+| 🟢 4 | `evaluation/backtest.py` | 125 | rf 파라미터 추가 (기본값 0 유지) |
 
 ---
 
@@ -421,7 +411,7 @@ composite = avg_confidence × avg_score + expert_count × 0.5
 | `ret_5d` | -0.3 ~ 0.3 | 5일 누적 수익률 |
 | `ret_20d` | -0.5 ~ 0.5 | 20일 누적 수익률 |
 | `rsi` | 0 ~ 100 | RSI (기본값 50) |
-| `macd_diff` | 임의 | ⚠️ 실제로는 Signal Line 값 |
+| `macd_diff` | 임의 | MACD 선 - 시그널 선 (양수=골든크로스) ✅ |
 | `bb_pct` | 0 ~ 1 | BB 내 위치 (기본값 0.5) |
 | `volume_ratio` | 0 ~ 수십 | 거래량/20일평균 (기본값 1) |
 | `hist_vol_20` | 0.1 ~ 1.0 | 연환산 역사적 변동성 |

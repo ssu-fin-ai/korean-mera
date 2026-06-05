@@ -99,7 +99,8 @@ pykrx → FDR fallback
 | `adx` | ADX (추세 강도) |
 | `mfi` | MFI-14 (자금흐름) |
 | `beta_20d` | 20일 베타 (KOSPI 대비) |
-| `relative_strength` | KOSPI 대비 상대강도 |
+| `rel_strength_5d` | KOSPI 대비 5일 상대수익률 |
+| `rel_strength_20d` | KOSPI 대비 20일 상대수익률 |
 
 ### 3.2 재무지표 Financials — 수집처: pykrx·DART·네이버
 
@@ -242,7 +243,7 @@ cache/
 ├── fin_{ticker}_{YYYYMM}.json       # 재무지표 (월별 — 같은 달 재사용)
 ├── filings_{ticker}_{YYYYMMDD}.json # 공시 (일별 — 같은 날짜 재사용)
 ├── sector_map.parquet               # 섹터 매핑 (7일 유효)
-└── shorting_{ticker}_{date}.json    # 공매도 (일별)
+└── short_{ticker}_{date}.json       # 공매도 (일별)
 ```
 
 **캐시 유효 기간:**
@@ -277,11 +278,12 @@ stock_patterns       ├─ snapshot (기술지표)
 └─ metadata          └─ retrieved_patterns (ChromaDB)
    label_5d·10d·20d
                      ↓
+             [GateNet 라우팅 (gate_node)]
+             후보별 전문가 가중치 산정 → gate_weights_map
+                     ↓
              [5개 전문가 병렬 실행]
              growth / value / theme / dividend / crisis
              (snapshot + financials + 공시 + RAG → Claude LLM)
                      ↓
-             [GateNet 가중치 적용]
-                     ↓
-             aggregator → 포트폴리오 (TOP-20, confidence ≥ 0.60)
+             aggregator (GateNet 가중치 반영) → 포트폴리오 (TOP-5, confidence ≥ 0.60)
 ```
