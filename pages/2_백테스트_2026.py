@@ -95,6 +95,14 @@ def load_eval(port_date, eval_date):
     f = BACKTEST_DIR / port_date / f"eval_{eval_date}.json"
     return json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
 
+@st.cache_data(ttl=300)
+def check_data_source() -> str:
+    port_date, eval_date = MONTHLY_SCHEDULE[0]
+    if _store.get_eval(_to_dash(port_date), _to_dash(eval_date)):
+        return "🗄️ DB"
+    f = BACKTEST_DIR / port_date / f"eval_{eval_date}.json"
+    return "📂 로컬 파일" if f.exists() else "❌ 데이터 없음"
+
 
 # ── 지표 계산 ────────────────────────────────────────────────────
 
@@ -147,7 +155,7 @@ def build_summary_df(skey):
 # ════════════════════════════════════════════════════════════════
 
 st.title("📊 MERA 2026 백테스트")
-st.caption("전문가별 포트폴리오 선정 및 실제 수익률 평가 | 기간: 2026.01 ~ 05")
+st.caption(f"전문가별 포트폴리오 선정 및 실제 수익률 평가 | 기간: 2026.01 ~ 05 | 데이터 소스: {check_data_source()}")
 
 section = st.radio(
     "섹션 선택",
