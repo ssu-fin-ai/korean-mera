@@ -54,7 +54,7 @@ def _dash(d): return f"{d[:4]}-{d[4:6]}-{d[6:]}"
 
 def _date_label(port_date, skey):
     if skey == "월별 (5회)":
-        return {"01":"1월","02":"2월","03":"3월","04":"4월","05":"5월"}.get(port_date[4:6], port_date)
+        return {"01":"01월","02":"02월","03":"03월","04":"04월","05":"05월"}.get(port_date[4:6], port_date)
     return f"{port_date[4:6]}/{port_date[6:]}"
 
 def _fmt(v, f="+.1%"):
