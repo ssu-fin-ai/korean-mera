@@ -70,8 +70,6 @@ pykrx → FDR fallback
 | label_5d·10d·20d | OHLCV에서 계산 | `close.pct_change(N).shift(-N)` |
 | 임베딩 벡터 | OpenAI API | text-embedding-3-small |
 
-![DB 구축 흐름도](images/01_DB구축_흐름도.png)
-
 ### 2.4 구축 / 갱신 시점
 
 | 명령 | 대상 | 샘플링 | 규모 |
@@ -207,8 +205,6 @@ RSI, 거래량비율, MACD, 수익률 등 **수치 패턴의 조합**이 비슷�
 
 ---
 
-![종목선정 흐름도](images/02_종목선정_흐름도.png)
-
 ## 4. 전문가별 사용 데이터 요약
 
 | 전문가 | 주요 판단 데이터 | 공시 | RAG 레이블 |
@@ -291,5 +287,3 @@ stock_patterns       ├─ snapshot (기술지표)
                      ↓
              aggregator (GateNet 가중치 반영) → 포트폴리오 (TOP-5, confidence ≥ 0.60)
 ```
-
-![종목평가 흐름도](images/03_종목평가_흐름도.png)
