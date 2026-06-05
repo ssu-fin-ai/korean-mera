@@ -6,6 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import altair as alt
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -208,8 +209,19 @@ if section == "📊 연간 성과 요약":
             .pivot(index="port_date", columns="전문가", values="평균수익")
             .reindex([p for p, _ in MONTHLY_SCHEDULE])
         )
-        pivot.index = [f"{int(p[4:6]):02d}월" for p in pivot.index]
-        st.bar_chart(pivot, height=300)
+        month_order = [f"{i:02d}월" for i in range(1, 13)]
+        pivot.index = month_order[:len(pivot)]
+        pivot.index.name = "월"
+        pivot_long = pivot.reset_index().melt(id_vars="월", var_name="전문가", value_name="평균수익")
+        chart = (
+            alt.Chart(pivot_long).mark_bar().encode(
+                x=alt.X("월:O", sort=month_order, title=""),
+                y=alt.Y("평균수익:Q", axis=alt.Axis(format=".0%", title="평균수익률")),
+                color=alt.Color("전문가:N"),
+                xOffset="전문가:N",
+            ).properties(height=300)
+        )
+        st.altair_chart(chart, use_container_width=True)
     else:
         st.info("평가 데이터가 없습니다.")
 

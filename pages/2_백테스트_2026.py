@@ -6,6 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import altair as alt
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -223,12 +224,23 @@ if section == "📊 분석 주기별 리포트":
         # 기간별 수익률 차트
         st.subheader("기간별 평균수익률")
         if not df_sum.empty and "expert_key" in df_sum.columns:
+            period_order = [_date_label(p, freq_key) for p, _ in sched]
             pivot = (
                 df_sum[df_sum["expert_key"].isin(EXPERTS)]
                 .pivot(index="날짜", columns="전문가", values="평균수익")
-                .reindex([_date_label(p, freq_key) for p, _ in sched])
+                .reindex(period_order)
             )
-            st.bar_chart(pivot, height=300)
+            pivot.index.name = "날짜"
+            pivot_long = pivot.reset_index().melt(id_vars="날짜", var_name="전문가", value_name="평균수익")
+            chart = (
+                alt.Chart(pivot_long).mark_bar().encode(
+                    x=alt.X("날짜:O", sort=period_order, title=""),
+                    y=alt.Y("평균수익:Q", axis=alt.Axis(format=".0%", title="평균수익률")),
+                    color=alt.Color("전문가:N"),
+                    xOffset="전문가:N",
+                ).properties(height=300)
+            )
+            st.altair_chart(chart, use_container_width=True)
         else:
             st.info("평가 데이터가 없습니다. 백테스트를 먼저 실행하세요.")
 
