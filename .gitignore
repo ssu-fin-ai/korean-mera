@@ -31,7 +31,5 @@ Thumbs.db
 # OMC
 .omc/
 
-# 보고서 (로컬 전용) — 발표자료 폴더는 예외
-docs/report/*
-!docs/report/발표자료/
-!docs/report/발표자료/**
+# 보고서 (로컬 전용)
+docs/report/
