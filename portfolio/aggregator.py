@@ -1,4 +1,14 @@
-"""전문가 에이전트 신호 집계 → 종목 랭킹 & 포트폴리오 생성"""
+"""전문가 에이전트 신호 집계 → 종목 랭킹 & 포트폴리오 생성
+
+두 가지 집계 방식을 제공한다:
+  1. aggregate() / build_portfolio(): 단일 종목 파이프라인용 (구버전 호환)
+  2. aggregator_node() / reporter_node(): LangGraph 노드 (현재 메인 방식)
+
+LangGraph 방식의 복합 점수 공식:
+  composite = (Σ confidence_i × score_i × gate_weight_i) / n + 전문가수 × 0.5
+  - gate_weight: 종목 패턴에 맞는 전문가의 의견에 더 높은 가중치 부여
+  - 전문가수 보너스: 여러 전문가가 동시에 BUY 판단 시 추가 점수
+"""
 
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -8,6 +18,7 @@ from loguru import logger
 
 from config import SETTINGS
 
+# 신호 → 수치 변환 (집계 계산용)
 SIGNAL_SCORE = {"BUY": 1.0, "HOLD": 0.0, "SELL": -1.0}
 
 
@@ -15,12 +26,13 @@ SIGNAL_SCORE = {"BUY": 1.0, "HOLD": 0.0, "SELL": -1.0}
 
 @dataclass
 class StockSignal:
+    """단일 종목의 전문가 결과를 집계하기 위한 데이터 클래스"""
     ticker: str
     name: str
     sector: str
     date: str
-    gate_result: dict = field(default_factory=dict)
-    expert_results: list[dict] = field(default_factory=list)
+    gate_result: dict = field(default_factory=dict)      # GateNet 결과 (confidence, pattern_type)
+    expert_results: list[dict] = field(default_factory=list)  # 전문가별 신호 목록
     final_signal: str = "HOLD"
     final_score: float = 0.0
     final_confidence: float = 0.5
@@ -29,7 +41,12 @@ class StockSignal:
 
 
 def aggregate(stock_signal: StockSignal) -> StockSignal:
-    """전문가 결과를 가중 평균으로 집계 (단일 종목용)"""
+    """전문가 결과를 가중 평균으로 집계 (단일 종목용)
+
+    각 전문가 신호를 confidence로 가중해 평균 점수를 계산하고
+    GateNet confidence를 곱해 최종 점수를 조정한다.
+    임계값: 0.3 초과 → BUY, -0.3 미만 → SELL, 그 외 → HOLD
+    """
     results = stock_signal.expert_results
     if not results:
         return stock_signal
@@ -40,10 +57,12 @@ def aggregate(stock_signal: StockSignal) -> StockSignal:
         sig = r.get("signal", "HOLD")
         conf = float(r.get("confidence", 0.5))
         target = float(r.get("target_return", 0.0))
+        # 신호 점수 × confidence: BUY 확신도가 높을수록 큰 양수값
         scores.append(SIGNAL_SCORE.get(sig, 0.0) * conf)
         confidences.append(conf)
         target_returns.append(target)
 
+    # GateNet confidence로 전체 스코어 스케일링 (패턴 불일치 종목 점수 하향)
     weighted_score = sum(scores) / len(scores) * gate_conf
     stock_signal.final_signal = (
         "BUY" if weighted_score > 0.3 else
@@ -61,7 +80,7 @@ def build_portfolio(
     top_n: int = 20,
     min_confidence: float = 0.60,
 ) -> pd.DataFrame:
-    """BUY 신호 종목 중 상위 N개 포트폴리오 구성"""
+    """BUY 신호 종목 중 신뢰도 필터 후 상위 N개 포트폴리오 구성 (단일 종목 파이프라인용)"""
     rows = [
         {
             "ticker": s.ticker,
@@ -81,13 +100,14 @@ def build_portfolio(
     df = pd.DataFrame(rows)
     if df.empty:
         return df
+    # BUY + 최소 신뢰도 필터 후 점수 내림차순 정렬
     buy_df = (
         df[(df["signal"] == "BUY") & (df["confidence"] >= min_confidence)]
         .sort_values("score", ascending=False)
         .head(top_n)
         .reset_index(drop=True)
     )
-    buy_df.index += 1
+    buy_df.index += 1  # 랭킹을 1부터 시작
     return buy_df
 
 
@@ -112,11 +132,23 @@ def build_report(portfolio: pd.DataFrame, date: str) -> str:
 # ── LangGraph 집계 노드 ───────────────────────────────────────────────────────
 
 def aggregator_node(state: dict) -> dict:
-    """5개 전문가 picks 통합 → 종목별 복합 스코어링 + 포트폴리오 구성"""
+    """5개 전문가 picks 통합 → 종목별 복합 스코어링 + 포트폴리오 구성
+
+    처리 흐름:
+    1. 5개 전문가의 picks를 모아 ticker별로 그룹핑
+    2. BUY + min_confidence 이상인 picks만 선별
+    3. GateNet 가중치를 반영한 복합 점수 계산
+    4. 복합 점수 내림차순으로 TOP-N 선정
+    5. pros/cons 중복 제거 후 통합
+
+    복합 점수 = (Σ confidence × score × gate_weight) / n + 전문가수 × 0.5
+    """
+    # 모든 전문가 picks를 하나로 합침
     all_picks: list[dict] = []
     for expert in ["growth", "value", "theme", "dividend", "crisis"]:
         all_picks.extend(state.get(f"{expert}_picks", []))
 
+    # ticker별로 picks 그룹핑 (같은 종목을 여러 전문가가 선택 가능)
     ticker_picks: dict[str, list[dict]] = defaultdict(list)
     for pick in all_picks:
         ticker = pick.get("ticker", "")
@@ -124,21 +156,22 @@ def aggregator_node(state: dict) -> dict:
             ticker_picks[ticker].append(pick)
 
     cfg = SETTINGS["portfolio"]
-    min_conf = float(cfg.get("signal_threshold", 0.60))
-    top_n = int(cfg.get("top_n", 20))
+    min_conf = float(cfg.get("signal_threshold", 0.60))  # 최소 신뢰도 임계값
+    top_n = int(cfg.get("top_n", 20))                    # 최종 선정 종목 수
 
     final_portfolio: list[dict] = []
-
     gate_weights_map: dict = state.get("gate_weights_map", {})
 
     for ticker, picks in ticker_picks.items():
+        # BUY 신호 + 최소 신뢰도 이상인 picks만 집계에 사용
         buy_picks = [
             p for p in picks
             if p.get("signal") == "BUY" and float(p.get("confidence", 0)) >= min_conf
         ]
         if not buy_picks:
-            continue
+            continue  # BUY 조건 미충족 종목 제외
 
+        # 동의한 전문가 목록 (중복 제거)
         experts = list({p["expert"] for p in buy_picks})
         n = len(buy_picks)
         avg_conf = round(sum(float(p.get("confidence", 0)) for p in buy_picks) / n, 3)
@@ -146,20 +179,20 @@ def aggregator_node(state: dict) -> dict:
         avg_ret = round(sum(float(p.get("target_return", 0)) for p in buy_picks) / n, 4)
         avg_days = round(sum(int(p.get("horizon_days", 10)) for p in buy_picks) / n)
 
-        # GateNet 가중치 반영: 전문가별 confidence×score×gate_weight 가중합
+        # GateNet 가중치 반영: 패턴에 맞는 전문가 의견에 더 높은 비중
         gate_w = gate_weights_map.get(ticker, {})
         weighted_scores = [
             float(p.get("confidence", 0.5)) * int(p.get("score", 5))
-            * gate_w.get(p["expert"], 1.0)
+            * gate_w.get(p["expert"], 1.0)  # GateNet 가중치 없으면 1.0 (중립)
             for p in buy_picks
         ]
-        # 복합 점수: gate 가중 평균 + 전문가 동의 수 보너스 (전문가당 +0.5)
+        # 전문가 동의 수 보너스: 여러 전문가가 동시에 BUY → 신뢰도 높음
         composite = round(sum(weighted_scores) / n + len(experts) * 0.5, 2)
 
-        # 대표 근거: 신뢰도×매력도 최고 전문가
+        # 대표 근거: confidence × score가 가장 높은 전문가의 reason 사용
         best = max(buy_picks, key=lambda p: float(p.get("confidence", 0)) * int(p.get("score", 5)))
 
-        # pros / cons 통합 (중복 제거, 순서 유지)
+        # pros/cons 중복 제거 (삽입 순서 유지)
         seen_pros: set[str] = set()
         seen_cons: set[str] = set()
         unique_pros: list[str] = []
@@ -186,10 +219,11 @@ def aggregator_node(state: dict) -> dict:
             "avg_target_return": avg_ret,
             "avg_horizon_days": avg_days,
             "reason": best.get("reason", ""),
-            "pros": unique_pros[:6],
-            "cons": unique_cons[:4],
+            "pros": unique_pros[:6],   # 최대 6개만 표시
+            "cons": unique_cons[:4],   # 최대 4개만 표시
         })
 
+    # 복합 점수 내림차순 정렬 후 TOP-N 선정
     final_portfolio.sort(key=lambda x: x["composite_score"], reverse=True)
     final_portfolio = final_portfolio[:top_n]
 
@@ -201,7 +235,10 @@ def aggregator_node(state: dict) -> dict:
 
 
 def reporter_node(state: dict) -> dict:
-    """final_portfolio → 텍스트 리포트 생성"""
+    """final_portfolio → 텍스트 리포트 생성
+
+    각 종목에 대해 복합점수·신뢰도·목표수익률·전문가·근거·긍정요인·리스크를 출력한다.
+    """
     portfolio = state.get("final_portfolio", [])
     date = state.get("date", "")
     today_dash = f"{date[:4]}-{date[4:6]}-{date[6:]}" if len(date) == 8 else date
@@ -242,14 +279,18 @@ def reporter_node(state: dict) -> dict:
 # ── 포트폴리오 DataFrame 변환 (PortfolioStore 저장용) ─────────────────────────
 
 def portfolio_to_df(portfolio: list[dict], date: str) -> pd.DataFrame:
-    """LangGraph final_portfolio → PortfolioStore 호환 DataFrame"""
+    """LangGraph final_portfolio 리스트 → PortfolioStore 저장용 DataFrame 변환
+
+    PortfolioStore.save()는 특정 컬럼 구조의 DataFrame을 기대하므로
+    final_portfolio의 키를 표준 컬럼명으로 매핑한다.
+    """
     if not portfolio:
         return pd.DataFrame()
     rows = [
         {
             "ticker": item["ticker"],
             "name": item["name"],
-            "sector": "",
+            "sector": "",              # 집계 단계에서 섹터 정보 미보존 → 빈값
             "date": date,
             "signal": item["signal"],
             "score": item["composite_score"],
@@ -259,5 +300,5 @@ def portfolio_to_df(portfolio: list[dict], date: str) -> pd.DataFrame:
         for item in portfolio
     ]
     df = pd.DataFrame(rows)
-    df.index = range(1, len(df) + 1)
+    df.index = range(1, len(df) + 1)  # 랭킹 1부터 시작
     return df

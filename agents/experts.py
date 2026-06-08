@@ -2,13 +2,22 @@
 
 각 전문가는 스크리너가 선별한 Top-N 후보 종목을 배치로 받아 LLM 1회 호출로
 최대 5개 추천 종목을 선택하고, 각 종목에 대해 근거·긍정·리스크를 출력한다.
+
+공통 처리 흐름:
+  1. 후보 종목 리스트를 전문가 특화 포맷터로 텍스트 변환
+  2. 전문가 역할·분석 지침 + JSON 출력 형식을 합쳐 프롬프트 구성
+  3. Claude LLM 호출
+  4. JSON 파싱 → picks 리스트 정규화 (타입 보정, 기본값 보완)
+  5. LangGraph state에 {expert}_picks 키로 반환
 """
 
 from agents.base import call_llm, parse_json_response
 from loguru import logger
 
+# 모든 전문가 공통 시스템 프롬프트: JSON 전용 응답 강제
 _SYSTEM_BASE = "당신은 한국 주식시장 전문 애널리스트입니다. 반드시 JSON만 응답하세요."
 
+# LLM이 반환해야 할 JSON 구조 명세 (프롬프트 말미에 항상 첨부)
 _JSON_FORMAT = """
 출력 형식 (JSON만, 다른 텍스트 없이):
 {
@@ -39,6 +48,7 @@ cons: 리스크 1개 이상 (구체적 수치 포함)"""
 # ── 포맷팅 헬퍼 ──────────────────────────────────────────────────────────────
 
 def _fmt_won(v) -> str:
+    """숫자를 한국식 원 단위(조/억)로 변환 (예: 1500000000000 → '1.5조')"""
     try:
         n = int(str(v).replace(",", ""))
         if abs(n) >= 1_000_000_000_000:
@@ -51,17 +61,24 @@ def _fmt_won(v) -> str:
 
 
 def _pct(v, multiply: bool = False) -> str:
+    """소수를 퍼센트 문자열로 변환 (multiply=True면 ×100 처리)"""
     if v is None:
         return "N/A"
     val = float(v) * (100 if multiply else 1)
     return f"{'+' if val >= 0 else ''}{val:.1f}%"
 
 
+# label_key → 기간(일) 매핑 (RAG 섹션 텍스트 생성용)
 _LABEL_DAYS = {"label_5d": 5, "label_10d": 10, "label_20d": 20}
 
 
 def _fmt_rag_section(retrieved: list, label_key: str = "label_5d") -> str:
-    """유사 과거 패턴 수익률 통계 섹션 생성"""
+    """RAG 유사 패턴 수익률 통계 섹션 텍스트 생성
+
+    상위 5개 패턴에서 유효한 수익률만 추출해
+    유사도·수익률 목록과 적중률·평균수익 요약을 반환한다.
+    LLM이 confidence를 조정할 근거 데이터로 활용.
+    """
     days = _LABEL_DAYS.get(label_key, 5)
     valid = []
     for p in retrieved[:5]:
@@ -69,6 +86,7 @@ def _fmt_rag_section(retrieved: list, label_key: str = "label_5d") -> str:
         dist = p.get("distance", 1.0)
         if lbl not in (None, "", "N/A"):
             try:
+                # (유사도%, 수익률%) 쌍으로 변환
                 valid.append((round((1 - float(dist)) * 100), float(lbl) * 100))
             except Exception:
                 pass
@@ -78,15 +96,18 @@ def _fmt_rag_section(retrieved: list, label_key: str = "label_5d") -> str:
     for i, (sim, ret) in enumerate(valid, 1):
         lines.append(f"  {i}. 유사도:{sim}% → {days}일후:{ret:+.1f}%")
     rets = [r for _, r in valid]
-    hit = sum(1 for r in rets if r > 0)
+    hit = sum(1 for r in rets if r > 0)  # 양수 수익률 = 적중
     avg = sum(rets) / len(rets)
     lines.append(f"  적중률:{hit}/{len(rets)} | 평균수익:{avg:+.1f}%")
     return "\n".join(lines)
 
 
 # ── 전문가별 후보 포맷터 ──────────────────────────────────────────────────────
+# 각 전문가가 중점을 두는 지표만 골라 텍스트로 변환한다.
+# LLM 프롬프트에 포함되므로 너무 길면 토큰 낭비, 너무 짧으면 분석 품질 저하.
 
 def _fmt_growth(c: dict) -> str:
+    """성장주 포맷: 실적 YoY·기술적 모멘텀·공매도·RAG 패턴 중심"""
     f, s = c["financials"], c["snapshot"]
     price = f.get("current_price")
     mktcap = f.get("mktcap")
@@ -95,6 +116,7 @@ def _fmt_growth(c: dict) -> str:
         f"현재가:{f'{price:,}원' if price else 'N/A'} | 시총:{_fmt_won(mktcap) if mktcap else 'N/A'}",
         f"PER:{f.get('per', 'N/A')} | EPS:{f.get('eps', 'N/A')}원 | ROE:{f.get('roe', 'N/A')}%",
     ]
+    # 매출·영업이익·순이익 YoY 성장률 (있는 것만 표시)
     yoy_parts = []
     if f.get("revenue_yoy") is not None:
         yoy_parts.append(f"매출YoY:{float(f['revenue_yoy']):+.1f}%")
@@ -113,6 +135,7 @@ def _fmt_growth(c: dict) -> str:
         lines.append(f"공매도:{sr}% | 5일평균:{f.get('short_ratio_5d_avg', 'N/A')}%")
     if c.get("news_text"):
         lines.append(f"최근공시:\n{c['news_text']}")
+    # RAG 유사 패턴 수익률 통계 (label_key는 monthly/weekly 모드에 따라 결정)
     rag = _fmt_rag_section(c.get("retrieved_patterns", []), label_key=c.get("rag_label_key", "label_20d"))
     if rag:
         lines.append(rag)
@@ -120,6 +143,7 @@ def _fmt_growth(c: dict) -> str:
 
 
 def _fmt_value(c: dict) -> str:
+    """가치주 포맷: PBR/PER·Graham Number·재무 안정성·배당 중심"""
     f = c["financials"]
     price = f.get("current_price")
     lines = [
@@ -128,12 +152,14 @@ def _fmt_value(c: dict) -> str:
         f"PER:{f.get('per', 'N/A')} | PBR:{f.get('pbr', 'N/A')} | "
         f"EPS:{f.get('eps', 'N/A')}원 | BPS:{f.get('bps', 'N/A')}원",
     ]
+    # 섹터 대비 PER/PBR 위치 (음수 = 섹터 평균보다 저평가)
     pv_per = f.get("per_vs_sector")
     pv_pbr = f.get("pbr_vs_sector")
     if pv_per is not None or pv_pbr is not None:
         lines.append(
             f"섹터대비 PER:{_pct(pv_per, multiply=True)} | PBR:{_pct(pv_pbr, multiply=True)}"
         )
+    # Graham Number = √(22.5 × EPS × BPS) — 벤저민 그레이엄의 내재가치 기준
     gn = f.get("graham_number")
     if gn and price:
         lines.append(f"Graham Number:{int(gn):,}원 (현재가비율:{round(float(price) / float(gn), 2)}x)")
@@ -146,6 +172,7 @@ def _fmt_value(c: dict) -> str:
         f"배당수익률:{f.get('div', 'N/A')}% | 배당성향:{f.get('payout_ratio', 'N/A')}% | "
         f"FCF:{_fmt_won(f['fcf']) if f.get('fcf') is not None else 'N/A'}"
     )
+    # 52주 고점/저점 대비 위치 (가치주 저평가 확인에 유용)
     h52 = f.get("pct_from_52w_high")
     l52 = f.get("pct_from_52w_low")
     if h52 is not None:
@@ -159,6 +186,7 @@ def _fmt_value(c: dict) -> str:
 
 
 def _fmt_theme(c: dict) -> str:
+    """테마주 포맷: 거래량 폭발·단기 모멘텀·공매도·52주 위치 중심"""
     f, s = c["financials"], c["snapshot"]
     price = f.get("current_price")
     lines = [
@@ -183,6 +211,7 @@ def _fmt_theme(c: dict) -> str:
 
 
 def _fmt_dividend(c: dict) -> str:
+    """배당주 포맷: 배당수익률·FCF·베타·변동성 중심 (방어적 특성 강조)"""
     f, s = c["financials"], c["snapshot"]
     price = f.get("current_price")
     lines = [
@@ -194,6 +223,7 @@ def _fmt_dividend(c: dict) -> str:
         f"OCF:{_fmt_won(f['ocf']) if f.get('ocf') is not None else 'N/A'}",
         f"ROE:{f.get('roe', 'N/A')}% | ROA:{f.get('roa', 'N/A')}%",
         f"부채비율:{f.get('debt_ratio', 'N/A')}% | 이자보상:{f.get('interest_coverage', 'N/A')}x",
+        # 베타 1 미만 = 시장보다 변동성 낮음 (방어적 배당주에 적합)
         f"베타:{round(float(s.get('beta_20d') or 1), 2)} | "
         f"역사적변동성:{round(float(s.get('hist_vol_20') or 0) * 100, 1)}%",
         f"5일:{_pct(s.get('ret_5d'), multiply=True)} | 20일:{_pct(s.get('ret_20d'), multiply=True)}",
@@ -207,14 +237,17 @@ def _fmt_dividend(c: dict) -> str:
 
 
 def _fmt_crisis(c: dict) -> str:
+    """위기종목 포맷: 급락 폭·과매도 지표·재무 건전성 중심 (반등 가능성 판단)"""
     f, s = c["financials"], c["snapshot"]
     price = f.get("current_price")
     lines = [
         f"### {c['name']} ({c['ticker']}) — {c['sector']}",
         f"현재가:{f'{price:,}원' if price else 'N/A'}",
+        # 단기 수익률 (음수 = 급락)
         f"5일:{_pct(s.get('ret_5d'), multiply=True)} | "
         f"20일:{_pct(s.get('ret_20d'), multiply=True)} | "
         f"1일:{_pct(s.get('ret_1d'), multiply=True)}",
+        # RSI 30 이하 = 과매도, BB 하단 = 지지선 접근
         f"RSI:{s.get('rsi', 50):.0f} | BB위치:{s.get('bb_pct', 0.5):.2f} | "
         f"거래량비율:{s.get('volume_ratio', 1):.1f}x",
     ]
@@ -225,6 +258,7 @@ def _fmt_crisis(c: dict) -> str:
     sr = f.get("short_ratio")
     if sr is not None:
         lines.append(f"공매도:{sr}% | 5일평균:{f.get('short_ratio_5d_avg', 'N/A')}%")
+    # 재무 건전성: 부채비율·유동비율·이자보상배율로 반등 지속 가능성 확인
     lines.append(
         f"부채비율:{f.get('debt_ratio', 'N/A')}% | 유동비율:{f.get('current_ratio', 'N/A')}% | "
         f"이자보상:{f.get('interest_coverage', 'N/A')}x"
@@ -237,6 +271,7 @@ def _fmt_crisis(c: dict) -> str:
     return "\n".join(lines)
 
 
+# 전문가 이름 → 포맷터 함수 매핑 (프롬프트 빌더에서 동적 선택)
 _FORMATTERS = {
     "growth": _fmt_growth,
     "value": _fmt_value,
@@ -249,7 +284,13 @@ _FORMATTERS = {
 # ── 프롬프트 빌더 ─────────────────────────────────────────────────────────────
 
 def _build_prompt(role_desc: str, guide: str, candidates: list[dict], expert: str) -> str:
+    """전문가 역할·분석 지침·후보 종목 블록·JSON 형식을 합쳐 최종 프롬프트 생성
+
+    각 후보 종목은 expert에 맞는 포맷터로 텍스트화되어 번호와 함께 나열된다.
+    RAG 활용 지침을 포함해 LLM이 과거 패턴 통계를 confidence 조정에 반영하도록 유도한다.
+    """
     fmt = _FORMATTERS[expert]
+    # 후보 종목 각각을 포맷팅해 번호 붙여 합침
     blocks = "\n\n".join(f"{i}. {fmt(c)}" for i, c in enumerate(candidates, 1))
     return f"""{role_desc}
 
@@ -274,6 +315,7 @@ BUY 종목을 우선하되, HOLD/SELL도 근거가 명확하면 포함하세요.
 
 
 # ── 전문가 노드 ───────────────────────────────────────────────────────────────
+# 각 노드는 LangGraph state에서 자신의 candidates를 꺼내 LLM 분석 후 picks를 반환한다.
 
 _GROWTH_ROLE = "당신은 한국 성장주(고PER, 실적 모멘텀) 전문 애널리스트입니다."
 _GROWTH_GUIDE = """다음 관점에서 최대 5개 종목을 선택하세요:
@@ -288,6 +330,7 @@ _GROWTH_GUIDE = """다음 관점에서 최대 5개 종목을 선택하세요:
 
 
 def growth_node(state: dict) -> dict:
+    """성장주 전문가 노드: growth_candidates → growth_picks"""
     candidates = state.get("growth_candidates", [])
     if not candidates:
         return {"growth_picks": []}
@@ -312,6 +355,7 @@ _VALUE_GUIDE = """다음 관점에서 최대 5개 종목을 선택하세요:
 
 
 def value_node(state: dict) -> dict:
+    """가치주 전문가 노드: value_candidates → value_picks"""
     candidates = state.get("value_candidates", [])
     if not candidates:
         return {"value_picks": []}
@@ -335,6 +379,7 @@ _THEME_GUIDE = """다음 관점에서 최대 5개 종목을 선택하세요:
 
 
 def theme_node(state: dict) -> dict:
+    """테마주 전문가 노드: theme_candidates → theme_picks"""
     candidates = state.get("theme_candidates", [])
     if not candidates:
         return {"theme_picks": []}
@@ -359,6 +404,7 @@ _DIVIDEND_GUIDE = """다음 관점에서 최대 5개 종목을 선택하세요:
 
 
 def dividend_node(state: dict) -> dict:
+    """배당주 전문가 노드: dividend_candidates → dividend_picks"""
     candidates = state.get("dividend_candidates", [])
     if not candidates:
         return {"dividend_picks": []}
@@ -382,6 +428,7 @@ _CRISIS_GUIDE = """다음 관점에서 반등 가능성이 높은 종목을 최�
 
 
 def crisis_node(state: dict) -> dict:
+    """위기종목 전문가 노드: crisis_candidates → crisis_picks"""
     candidates = state.get("crisis_candidates", [])
     if not candidates:
         return {"crisis_picks": []}
@@ -395,6 +442,13 @@ def crisis_node(state: dict) -> dict:
 # ── 파싱 헬퍼 ────────────────────────────────────────────────────────────────
 
 def _parse_picks(raw: str, expert: str) -> list[dict]:
+    """LLM 응답 JSON 파싱 + 타입 정규화 + 기본값 보완
+
+    LLM이 반환한 picks 각 항목에 대해:
+    - expert 필드 주입 (어떤 전문가가 선택했는지 추적)
+    - pros/cons/reason 기본값 설정
+    - confidence/score/target_return/horizon_days 안전한 타입 변환
+    """
     result = parse_json_response(raw)
     if not result:
         logger.warning(f"{expert} 파싱 실패: {raw[:200]}")
@@ -404,10 +458,11 @@ def _parse_picks(raw: str, expert: str) -> list[dict]:
         logger.warning(f"{expert} picks 필드가 리스트 아님")
         return []
     for p in picks:
-        p["expert"] = expert
+        p["expert"] = expert  # 어느 전문가 에이전트의 결과인지 태그
         p.setdefault("pros", [])
         p.setdefault("cons", [])
         p.setdefault("reason", "")
+        # LLM이 문자열로 반환할 수 있으므로 float/int 변환 (실패 시 기본값)
         try:
             p["confidence"] = float(p.get("confidence", 0.5))
         except Exception:

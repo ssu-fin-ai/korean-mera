@@ -1,9 +1,15 @@
 """Supabase 기반 포트폴리오/평가 저장소
 
-테이블:
-  portfolio_history      - 일별 BUY 신호 종목
-  portfolio_eval_summary - 포트폴리오 날짜별 성과 요약
+외부 라이브러리 없이 urllib.request만으로 Supabase REST API를 직접 호출한다.
+(supabase-py 라이브러리 의존성 없음)
+
+테이블 구조:
+  portfolio_history      - 일별 BUY 신호 종목 (rank, signal_text 포함)
+  portfolio_eval_summary - 포트폴리오 날짜별 성과 요약 (ARR/MDD/소르티노/칼마)
   portfolio_eval_stocks  - 종목별 실제 수익률 + LLM 평가
+  backtest_picks         - 전문가별 종목 선정 결과 (백테스트용)
+  backtest_eval          - 전문가별 기간 평가 요약
+  backtest_eval_stocks   - 전문가별 종목별 실제 수익률
 """
 
 import json
@@ -15,10 +21,15 @@ from config import SUPABASE_URL, SUPABASE_KEY
 
 
 def _rest(path: str) -> str:
+    """Supabase REST API URL 조합 (PostgREST 엔드포인트)"""
     return f"{SUPABASE_URL}/rest/v1/{path}"
 
 
 def _headers(prefer: str = "resolution=merge-duplicates") -> dict:
+    """Supabase API 공통 헤더 생성
+
+    Prefer: resolution=merge-duplicates → upsert 시 충돌 행 업데이트
+    """
     return {
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}",
@@ -28,7 +39,7 @@ def _headers(prefer: str = "resolution=merge-duplicates") -> dict:
 
 
 def _pg_query(sql: str) -> list:
-    """pg/query 엔드포인트로 원시 SQL 실행"""
+    """pg/query 엔드포인트로 원시 SQL 실행 (DDL 마이그레이션용)"""
     data = json.dumps({"query": sql}).encode()
     req = urllib.request.Request(
         f"{SUPABASE_URL}/pg/query",
@@ -45,6 +56,7 @@ def _pg_query(sql: str) -> list:
 
 
 def _post(url: str, payload) -> tuple[int, bytes]:
+    """REST POST 요청 (INSERT용)"""
     data = json.dumps(payload).encode()
     req = urllib.request.Request(url, data=data, headers=_headers(), method="POST")
     try:
@@ -55,7 +67,11 @@ def _post(url: str, payload) -> tuple[int, bytes]:
 
 
 def _upsert(table: str, payload, on_conflict: str) -> tuple[int, bytes]:
-    """UNIQUE 충돌 시 UPDATE로 처리하는 upsert"""
+    """UNIQUE 충돌 시 UPDATE로 처리하는 upsert
+
+    on_conflict: UNIQUE 제약 컬럼명 (쉼표 구분, 예: "portfolio_date,ticker")
+    충돌 시 기존 행을 새 값으로 덮어씀 (Prefer: resolution=merge-duplicates).
+    """
     url = f"{_rest(table)}?on_conflict={on_conflict}"
     data = json.dumps(payload).encode()
     req = urllib.request.Request(url, data=data, headers=_headers(), method="POST")
@@ -67,6 +83,7 @@ def _upsert(table: str, payload, on_conflict: str) -> tuple[int, bytes]:
 
 
 def _get(url: str) -> tuple[int, list]:
+    """REST GET 요청 (SELECT용)"""
     req = urllib.request.Request(url, headers=_headers(prefer=""), method="GET")
     try:
         with urllib.request.urlopen(req, timeout=10) as r:
@@ -76,16 +93,25 @@ def _get(url: str) -> tuple[int, list]:
 
 
 class PortfolioStore:
-    """일별 BUY 신호 포트폴리오를 portfolio_history 테이블에 저장"""
+    """일별 BUY 신호 포트폴리오를 portfolio_history 테이블에 저장
+
+    저장 데이터: 날짜·종목코드·이름·섹터·신호·점수·신뢰도·목표수익률·랭크·신호텍스트
+    신호텍스트: 평가 시 LLM에게 신호 근거를 제공하기 위한 요약 문자열
+    """
 
     TABLE = "portfolio_history"
 
     def save(self, portfolio_date: str, portfolio_df) -> int:
-        """포트폴리오 DataFrame → Supabase upsert"""
+        """포트폴리오 DataFrame → Supabase upsert
+
+        signal_text: 평가 단계에서 LLM이 신호 근거를 이해할 수 있는 요약 텍스트.
+        portfolio_date + ticker UNIQUE 제약 → 같은 날 같은 종목 재저장 시 업데이트.
+        """
         rows = []
         for rank, row in portfolio_df.iterrows():
             reasons = row.get("reasons", [])
             reasons_text = "; ".join(reasons) if reasons else ""
+            # LLM 평가 시 "왜 이 종목을 BUY 했는지" 알 수 있는 요약 텍스트
             signal_text = (
                 f"BUY 신호 {portfolio_date}: {row['ticker']} {row['name']} [{row['sector']}]\n"
                 f"신뢰도:{row['confidence']:.0%} 점수:{row['score']:.2f} "
@@ -119,7 +145,7 @@ class PortfolioStore:
         return len(rows)
 
     def get_by_date(self, portfolio_date: str) -> list[dict]:
-        """특정 날짜 포트폴리오 전체 조회"""
+        """특정 날짜 포트폴리오 전체 조회 (rank 오름차순)"""
         status, data = _get(
             _rest(f"{self.TABLE}?portfolio_date=eq.{portfolio_date}&select=*&order=rank.asc")
         )
@@ -129,7 +155,7 @@ class PortfolioStore:
         return data
 
     def list_dates(self) -> list[str]:
-        """저장된 포트폴리오 날짜 목록 (오름차순)"""
+        """저장된 포트폴리오 날짜 목록 반환 (오름차순, 중복 제거)"""
         status, data = _get(
             _rest(f"{self.TABLE}?select=portfolio_date&order=portfolio_date.asc")
         )
@@ -139,7 +165,12 @@ class PortfolioStore:
 
 
 class EvaluationStore:
-    """포트폴리오 성과 평가 결과를 Supabase에 저장"""
+    """포트폴리오 성과 평가 결과를 Supabase에 저장
+
+    두 테이블에 분리 저장:
+      SUMMARY_TABLE: 날짜별 요약 (ARR/MDD/소르티노/칼마/LLM 요약문)
+      STOCK_TABLE:   종목별 상세 (실제수익률/적중여부/오신호원인/교훈)
+    """
 
     SUMMARY_TABLE = "portfolio_eval_summary"
     STOCK_TABLE = "portfolio_eval_stocks"
@@ -157,7 +188,11 @@ class EvaluationStore:
         sortino: float = 0.0,
         calmar: float = 0.0,
     ) -> None:
-        # 요약 저장
+        """평가 요약 + 종목별 상세 결과를 Supabase에 저장
+
+        portfolio_date UNIQUE → 같은 날짜 재평가 시 기존 결과 덮어씀.
+        """
+        # 포트폴리오 날짜별 요약 저장 (1행)
         status, body = _upsert(
             self.SUMMARY_TABLE,
             {
@@ -177,7 +212,7 @@ class EvaluationStore:
         if status not in (200, 201):
             logger.error(f"EvaluationStore 요약 저장 실패: {status} {body[:200]}")
 
-        # 종목별 평가 저장
+        # 종목별 상세 결과 저장 (종목 수만큼 행)
         if stock_evals:
             rows = [
                 {
@@ -189,8 +224,8 @@ class EvaluationStore:
                     "target_return": float(e["target_return"]),
                     "correct": bool(e["correct"]),
                     "confidence_score": float(e.get("confidence_score", 0.5)),
-                    "miss_reason": str(e.get("miss_reason", "")),
-                    "lesson": str(e.get("lesson", "")),
+                    "miss_reason": str(e.get("miss_reason", "")),  # 오신호 원인
+                    "lesson": str(e.get("lesson", "")),            # 다음 번 개선 교훈
                 }
                 for e in stock_evals
             ]
@@ -204,7 +239,7 @@ class EvaluationStore:
         )
 
     def get_summary_by_date(self, portfolio_date: str) -> dict | None:
-        """날짜별 요약 조회 (없으면 None)"""
+        """날짜별 요약 조회 (없으면 None, 있으면 첫 번째 행 반환)"""
         status, data = _get(
             _rest(f"{self.SUMMARY_TABLE}?portfolio_date=eq.{portfolio_date}&select=*")
         )
@@ -220,7 +255,7 @@ class EvaluationStore:
         return data if status == 200 else []
 
     def get_recent_summaries(self, n: int = 10) -> list[dict]:
-        """최근 N개 요약 (날짜 내림차순)"""
+        """최근 N개 요약 (날짜 내림차순, 대시보드 표시용)"""
         status, data = _get(
             _rest(f"{self.SUMMARY_TABLE}?select=*&order=portfolio_date.desc&limit={n}")
         )
@@ -230,9 +265,12 @@ class EvaluationStore:
 class BacktestStore:
     """2026 백테스트 picks / eval 결과를 Supabase에 저장
 
+    전문가별 picks와 평가 결과를 분리 저장해
+    백테스트 대시보드에서 전문가별 성과를 비교할 수 있다.
+
     테이블:
-      backtest_picks       - 전문가별 종목 선정 결과
-      backtest_eval        - 전문가별 기간 평가 요약
+      backtest_picks       - 전문가별 종목 선정 결과 (포트폴리오 날짜별)
+      backtest_eval        - 전문가별 기간 평가 요약 (avg_return, hit_rate)
       backtest_eval_stocks - 전문가별 종목별 실제 수익률
     """
 
@@ -243,6 +281,11 @@ class BacktestStore:
     # ── 저장 ─────────────────────────────────────────────────────
 
     def save_picks(self, portfolio_date: str, expert: str, picks: list[dict]) -> int:
+        """전문가별 picks를 backtest_picks 테이블에 저장
+
+        pros/cons는 JSON 문자열로 직렬화 (Supabase TEXT 컬럼에 저장).
+        portfolio_date + expert + ticker UNIQUE 제약으로 중복 방지.
+        """
         if not picks:
             return 0
         rows = [
@@ -269,7 +312,12 @@ class BacktestStore:
         return len(rows)
 
     def save_eval(self, portfolio_date: str, eval_date: str, results: dict) -> None:
-        """results: {expert: {avg_return, hit_rate, stock_count, stocks:[...]}}"""
+        """전문가별 평가 요약 + 종목별 결과 저장
+
+        results 형식: {expert: {avg_return, hit_rate, stock_count, stocks:[...]}}
+        eval_rows: 전문가별 1행씩 (평균 성과)
+        stock_rows: 전문가별 종목 수만큼 행
+        """
         eval_rows = []
         stock_rows = []
 
@@ -310,6 +358,7 @@ class BacktestStore:
     # ── 조회 ─────────────────────────────────────────────────────
 
     def get_picks(self, portfolio_date: str, expert: str) -> list[dict]:
+        """특정 날짜·전문가의 picks 조회, pros/cons JSON 문자열 → 리스트 역직렬화"""
         status, data = _get(
             _rest(f"{self.PICKS_TABLE}?portfolio_date=eq.{portfolio_date}&expert=eq.{expert}&select=*")
         )
@@ -325,18 +374,24 @@ class BacktestStore:
         return data
 
     def get_eval(self, portfolio_date: str, eval_date: str) -> dict:
-        """반환: {expert: {avg_return, hit_rate, stock_count, stocks:[...]}}"""
+        """특정 날짜 범위의 전문가별 평가 결과 조회
+
+        반환: {expert: {avg_return, hit_rate, stock_count, stocks:[...]}}
+        전문가별 요약 + 종목별 상세를 조인해 반환.
+        """
         status, evals = _get(
             _rest(f"{self.EVAL_TABLE}?portfolio_date=eq.{portfolio_date}&eval_date=eq.{eval_date}&select=*")
         )
         if status != 200 or not evals:
             return {}
 
+        # 종목별 상세 결과 조회
         status2, stocks = _get(
             _rest(f"{self.STOCKS_TABLE}?portfolio_date=eq.{portfolio_date}&eval_date=eq.{eval_date}&select=*")
         )
         stocks = stocks if status2 == 200 else []
 
+        # 전문가별로 종목 목록 그룹핑
         stock_map: dict[str, list] = {}
         for s in stocks:
             stock_map.setdefault(s["expert"], []).append(s)
@@ -355,6 +410,7 @@ class BacktestStore:
         return result
 
     def list_portfolio_dates(self) -> list[str]:
+        """저장된 백테스트 포트폴리오 날짜 목록 (오름차순, 중복 제거)"""
         status, data = _get(
             _rest(f"{self.PICKS_TABLE}?select=portfolio_date&order=portfolio_date.asc")
         )
@@ -364,7 +420,12 @@ class BacktestStore:
 
 
 def migrate_eval_constraints() -> None:
-    """backtest_eval/stocks unique constraint에 eval_date 추가 (멱등)"""
+    """backtest_eval/stocks UNIQUE 제약에 eval_date 추가 (멱등 실행 가능)
+
+    기존 제약(portfolio_date, expert)에 eval_date를 추가해
+    같은 포트폴리오를 여러 평가 날짜로 재평가할 수 있도록 한다.
+    기존 데이터는 모두 삭제 후 재시작 (스키마 변경으로 인한 불일치 방지).
+    """
     sqls = [
         "ALTER TABLE backtest_eval DROP CONSTRAINT IF EXISTS backtest_eval_uq",
         "ALTER TABLE backtest_eval ADD CONSTRAINT backtest_eval_uq UNIQUE(portfolio_date, eval_date, expert)",
@@ -382,8 +443,12 @@ def migrate_eval_constraints() -> None:
 
 
 def init_tables() -> None:
-    """테이블이 없으면 생성 (멱등)"""
+    """필요한 테이블이 없으면 생성 (멱등, IF NOT EXISTS 사용)
+
+    최초 배포 시 또는 새 환경 설정 시 호출해 테이블 스키마를 초기화한다.
+    """
     ddl_list = [
+        # 일별 BUY 포트폴리오 이력
         """CREATE TABLE IF NOT EXISTS portfolio_history (
             id BIGSERIAL PRIMARY KEY,
             portfolio_date DATE NOT NULL,
@@ -394,6 +459,7 @@ def init_tables() -> None:
             created_at TIMESTAMPTZ DEFAULT NOW(),
             CONSTRAINT portfolio_history_uq UNIQUE(portfolio_date, ticker)
         )""",
+        # 포트폴리오 성과 요약 (날짜별 1행)
         """CREATE TABLE IF NOT EXISTS portfolio_eval_summary (
             id BIGSERIAL PRIMARY KEY,
             portfolio_date DATE NOT NULL UNIQUE,
@@ -402,6 +468,7 @@ def init_tables() -> None:
             arr FLOAT8, mdd FLOAT8, sortino FLOAT8, calmar FLOAT8,
             summary_text TEXT, created_at TIMESTAMPTZ DEFAULT NOW()
         )""",
+        # 종목별 평가 상세
         """CREATE TABLE IF NOT EXISTS portfolio_eval_stocks (
             id BIGSERIAL PRIMARY KEY,
             portfolio_date DATE NOT NULL, eval_date DATE NOT NULL,
@@ -411,6 +478,7 @@ def init_tables() -> None:
             created_at TIMESTAMPTZ DEFAULT NOW(),
             CONSTRAINT portfolio_eval_stocks_uq UNIQUE(portfolio_date, ticker)
         )""",
+        # 백테스트 전문가별 picks
         """CREATE TABLE IF NOT EXISTS backtest_picks (
             id BIGSERIAL PRIMARY KEY,
             portfolio_date DATE NOT NULL,
@@ -423,6 +491,7 @@ def init_tables() -> None:
             created_at TIMESTAMPTZ DEFAULT NOW(),
             CONSTRAINT backtest_picks_uq UNIQUE(portfolio_date, expert, ticker)
         )""",
+        # 백테스트 전문가별 평가 요약
         """CREATE TABLE IF NOT EXISTS backtest_eval (
             id BIGSERIAL PRIMARY KEY,
             portfolio_date DATE NOT NULL,
@@ -432,6 +501,7 @@ def init_tables() -> None:
             created_at TIMESTAMPTZ DEFAULT NOW(),
             CONSTRAINT backtest_eval_uq UNIQUE(portfolio_date, eval_date, expert)
         )""",
+        # 백테스트 전문가별 종목 상세
         """CREATE TABLE IF NOT EXISTS backtest_eval_stocks (
             id BIGSERIAL PRIMARY KEY,
             portfolio_date DATE NOT NULL,

@@ -1,4 +1,11 @@
-"""메인 파이프라인: 데이터 수집 → 임베딩 → 신호 생성 → 리포트"""
+"""메인 파이프라인: 데이터 수집 → 임베딩 → 신호 생성 → 리포트
+
+3단계 파이프라인:
+  Phase 1 (build_history_db): 과거 패턴을 ChromaDB에 적재 (최초 1회)
+  Phase 2 (run_daily):        LangGraph MERA 그래프 실행 → 포트폴리오 리포트
+  Phase 2.5 (evaluate):       지난주 포트폴리오 실제 수익률 평가
+  Phase 3 (update_today):     오늘 패턴을 ChromaDB에 추가 (매일 갱신)
+"""
 
 import json
 from datetime import datetime, timedelta
@@ -16,6 +23,7 @@ from vector_store.store import PatternStore
 from db.supabase_store import PortfolioStore
 from portfolio.aggregator import portfolio_to_df
 
+# 리포트 저장 디렉토리 (없으면 자동 생성)
 REPORTS_DIR = ROOT / "reports"
 REPORTS_DIR.mkdir(exist_ok=True)
 
@@ -30,7 +38,15 @@ class MERAPipeline:
     # ── Phase 1: 히스토리 DB 구축 (최초 1회) ────────────────────────────────
 
     def build_history_db(self, years: int = None):
-        """과거 패턴을 ChromaDB에 적재 (최초 실행 시 1회)"""
+        """과거 패턴을 ChromaDB에 적재 (최초 실행 시 1회)
+
+        years년치 OHLCV에서 모든 거래일의 패턴 텍스트를 생성해
+        임베딩 벡터와 함께 ChromaDB에 upsert한다.
+        이후 run_daily()에서 RAG 검색의 기반 데이터로 활용된다.
+
+        각 문서 ID: "{ticker}_{YYYY-MM-DD}"
+        메타데이터: ticker, name, sector, market, date, label_5d/10d/20d
+        """
         years = years or SETTINGS["data"]["history_years"]
         end = datetime.today().strftime("%Y%m%d")
         start = (datetime.today() - timedelta(days=365 * years)).strftime("%Y%m%d")
@@ -53,6 +69,7 @@ class MERAPipeline:
                 name = sector_map.loc[ticker, "name"] if ticker in sector_map.index else ticker
                 market = sector_map.loc[ticker, "market"] if ticker in sector_map.index else "KOSPI"
 
+                # 모든 거래일에 대해 패턴 텍스트 + 임베딩 생성
                 sample_dates = [d.strftime("%Y-%m-%d") for d in df.index if not pd.isna(d)]
 
                 ids, texts, embeddings, metas = [], [], [], []
@@ -62,6 +79,7 @@ class MERAPipeline:
                     if snap is None:
                         continue
 
+                    # 해당 날짜의 미래 수익률 레이블 추출 (RAG 패턴의 정답 데이터)
                     label_row = df[df.index.strftime("%Y-%m-%d") == date_str]
                     def _lbl(col):
                         if label_row.empty or col not in label_row.columns:
@@ -74,6 +92,7 @@ class MERAPipeline:
 
                     sector = self.collector.get_sector_name(ticker, date_str.replace("-", ""))
 
+                    # label_5d 포함 → 이 패턴 이후 실제 수익률이 텍스트에 기록됨
                     text = generate_pattern_text(
                         ticker=ticker, name=name, sector=sector, market=market,
                         snapshot=snap, label_5d=label_5d,
@@ -87,6 +106,7 @@ class MERAPipeline:
                     metas.append({
                         "ticker": ticker, "name": name, "sector": sector,
                         "market": market, "date": date_str,
+                        # ChromaDB는 None을 허용하지 않아 빈 문자열로 저장
                         "label_5d":  str(label_5d)  if label_5d  is not None else "",
                         "label_10d": str(label_10d) if label_10d is not None else "",
                         "label_20d": str(label_20d) if label_20d is not None else "",
@@ -106,15 +126,25 @@ class MERAPipeline:
     # ── Phase 2: 일별 신호 생성 (LangGraph) ─────────────────────────────────
 
     def run_daily(self, date: str = None, horizon: str = "monthly") -> str:
-        """LangGraph MERA 그래프 실행 → 포트폴리오 리포트 반환"""
+        """LangGraph MERA 그래프 실행 → 포트폴리오 리포트 반환
+
+        horizon 파라미터:
+          "weekly"  → rag_label_key="label_5d"  (5일 후 수익률 기준 RAG)
+          "monthly" → rag_label_key="label_20d" (20일 후 수익률 기준 RAG, 기본값)
+
+        결과 저장:
+          reports/report_{date}.txt    - 텍스트 리포트
+          reports/portfolio_{date}.json - 포트폴리오 JSON
+          Supabase portfolio_history    - 다음날 수익률 평가를 위한 DB 저장
+        """
         today = date or datetime.today().strftime("%Y%m%d")
         today_dash = f"{today[:4]}-{today[4:6]}-{today[6:]}"
         rag_label_key = "label_5d" if horizon == "weekly" else "label_20d"
 
-        # 이전 포트폴리오 수익률 평가
+        # 매일 실행 시 지난주 포트폴리오 수익률 자동 평가
         self._evaluate_prev_portfolio(today_dash)
 
-        # LangGraph 그래프 실행
+        # LangGraph 그래프 빌드 및 실행
         from agents.graph import build_mera_graph
         graph = build_mera_graph()
 
@@ -124,16 +154,16 @@ class MERAPipeline:
         report: str = final_state.get("report", f"[{today_dash}] 리포트 생성 실패")
         portfolio: list[dict] = final_state.get("final_portfolio", [])
 
-        # 포트폴리오 DB 저장 (다음날 평가에 사용)
+        # Supabase에 포트폴리오 저장 (5영업일 후 수익률 평가에 사용)
         if portfolio:
             df = portfolio_to_df(portfolio, today_dash)
             self.portfolio_store.save(today_dash, df)
 
-        # 리포트 텍스트 저장
+        # 리포트 텍스트 파일 저장
         report_path = REPORTS_DIR / f"report_{today}.txt"
         report_path.write_text(report, encoding="utf-8")
 
-        # 포트폴리오 JSON 저장
+        # 포트폴리오 JSON 저장 (대시보드·백테스트 분석용)
         if portfolio:
             json_path = REPORTS_DIR / f"portfolio_{today}.json"
             json_path.write_text(
@@ -147,10 +177,14 @@ class MERAPipeline:
     # ── Phase 2.5: 이전 포트폴리오 평가 ─────────────────────────────────────
 
     def _get_weekly_portfolio_date(self, today_dash: str) -> str | None:
-        """5영업일(1주) 전 포트폴리오 날짜 반환"""
+        """5영업일(1주) 전 포트폴리오 날짜 반환
+
+        DB에 저장된 날짜 중 '5영업일 전' 날짜와 가장 가까운 것을 찾는다.
+        10일 이상 차이나면 신뢰할 수 없으므로 None 반환.
+        """
         try:
             today_dt = pd.to_datetime(today_dash)
-            target_dt = today_dt - pd.tseries.offsets.BDay(5)
+            target_dt = today_dt - pd.tseries.offsets.BDay(5)  # 5영업일 전
 
             dates = self.portfolio_store.list_dates()
             candidates = [d for d in dates if d < today_dash]
@@ -161,7 +195,7 @@ class MERAPipeline:
                 return abs((pd.to_datetime(d) - target_dt).days)
 
             closest = min(candidates, key=_dist)
-            if _dist(closest) > 10:
+            if _dist(closest) > 10:  # 10일 이상 차이면 매칭 실패
                 return None
             return closest
         except Exception as e:
@@ -169,7 +203,11 @@ class MERAPipeline:
             return None
 
     def _evaluate_prev_portfolio(self, today_dash: str) -> None:
-        """지난 주 포트폴리오 수익률 평가 후 EvaluationStore에 저장 (5영업일 기준)"""
+        """지난주 포트폴리오 수익률 평가 후 EvaluationStore에 저장 (5영업일 기준)
+
+        평가 가능한 이전 포트폴리오가 없으면 조용히 스킵.
+        평가 결과는 Supabase portfolio_eval_summary / portfolio_eval_stocks에 저장.
+        """
         prev_date = self._get_weekly_portfolio_date(today_dash)
         if not prev_date:
             return
@@ -188,7 +226,12 @@ class MERAPipeline:
     # ── Phase 3: 데이터 업데이트 (오늘치 추가) ───────────────────────────────
 
     def update_today(self, today: str = None):
-        """오늘 날짜 패턴을 ChromaDB에 추가"""
+        """오늘 날짜 패턴을 ChromaDB에 추가
+
+        run_daily() 전에 호출해 최신 데이터를 RAG DB에 반영한다.
+        label은 현재 시점에서 미래 값이 없으므로 빈 문자열로 저장.
+        나중에 해당 날짜가 지나면 label 값이 채워진 패턴으로 갱신된다.
+        """
         today = today or datetime.today().strftime("%Y%m%d")
         today_dash = f"{today[:4]}-{today[4:6]}-{today[6:]}"
         start = (datetime.strptime(today, "%Y%m%d") - timedelta(days=380)).strftime("%Y%m%d")
@@ -213,6 +256,7 @@ class MERAPipeline:
                 market = sector_map.loc[ticker, "market"] if ticker in sector_map.index else "KOSPI"
                 sector = self.collector.get_sector_name(ticker, today)
 
+                # 현재 시점의 label: 미래 수익률 (오늘 이후 데이터가 있으면 채워짐)
                 label_row = df[df.index.strftime("%Y-%m-%d") == today_dash]
                 def _lbl(col):
                     if label_row.empty or col not in label_row.columns:
